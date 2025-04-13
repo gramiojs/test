@@ -1,0 +1,44 @@
+{
+	"name": "@gramio/objects-builder",
+	"version": "0.0.1",
+	"description": "server-side parser for telegram init-data",
+	"keywords": ["gramio", "telegram", "objects", "builder", "tma", "webapp"],
+	"homepage": "https://github.com/gramiojs/objects-builder",
+	"readme": "https://github.com/gramiojs/objects-builder",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/gramiojs/objects-builder.git"
+	},
+	"author": {
+		"url": "https://github.com/kravetsone",
+		"name": "kravets"
+	},
+	"main": "./dist/index.cjs",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		"import": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"require": {
+			"types": "./dist/index.d.cts",
+			"default": "./dist/index.cjs"
+		}
+	},
+	"scripts": {
+		"prepublishOnly": "bunx pkgroll"
+	},
+	"type": "module",
+	"files": ["dist"],
+	"license": "MIT",
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.4",
+		"@types/bun": "^1.2.8",
+		"pkgroll": "^2.11.2",
+		"typescript": "^5.8.2"
+	},
+	"dependencies": {
+		"@gramio/types": "^9.0.1"
+	}
+}
