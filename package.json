@@ -39,6 +39,7 @@
 		"typescript": "^5.8.2"
 	},
 	"dependencies": {
-		"@gramio/types": "^9.0.1"
+		"@gramio/types": "^9.0.1",
+		"gramio": "^0.3.0"
 	}
 }
