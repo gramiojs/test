@@ -5,53 +5,139 @@
 [![JSR](https://jsr.io/badges/@gramio/test)](https://jsr.io/@gramio/test)
 [![JSR Score](https://jsr.io/badges/@gramio/test/score)](https://jsr.io/@gramio/test)
 
-# @gramio/test
+An event-driven test framework for bots built with [GramIO](https://gramio.dev). Users are the primary actors — they send messages, join/leave chats, click inline buttons — and the framework manages in-memory state and emits the correct Telegram updates to the bot under test.
 
-A library for testing bots built with [GramIO](https://gramio.dev).
+## Installation
+
+```bash
+bun add -d @gramio/test
+```
+
+## Quick Start
 
 ```ts
-import { beforeEach, describe, expect, it } from "bun:test";
-import { Bot, type ContextType } from "gramio";
-import { TelegramTestEnvironment } from "../src/index.ts";
-import { MessageObject } from "../src/objects/message.ts";
+import { describe, expect, it } from "bun:test";
+import { Bot } from "gramio";
+import { TelegramTestEnvironment } from "@gramio/test";
 
-describe("TelegramTestEnvironment", () => {
-    const bot = new Bot("test");
-    let environment: TelegramTestEnvironment;
+describe("My bot", () => {
+    it("should reply to /start", async () => {
+        const bot = new Bot("test");
+        bot.command("start", (ctx) => ctx.send("Welcome!"));
 
-    beforeEach(() => {
-        environment = new TelegramTestEnvironment(bot);
-    });
+        const env = new TelegramTestEnvironment(bot);
+        const user = env.createUser({ first_name: "Alice" });
 
-    it("should create a user", () => {
-        const user = environment.createUser();
+        await user.sendMessage("/start");
 
-        expect(user).toBeDefined();
-        expect(environment.users).toContain(user);
-    });
-
-    it("should create a message", async () => {
-        let receivedMessage: ContextType<Bot, "message"> | undefined;
-
-        bot.on("message", (ctx) => {
-            receivedMessage = ctx;
-            console.log(ctx);
-        });
-
-        const user = environment.createUser();
-        const message = new MessageObject({
-            text: "Hello",
-        }).from(user);
-
-        await environment.emitUpdate(message);
-
-        expect(receivedMessage).toBeDefined();
-        expect(receivedMessage?.text).toBe("Hello");
-        expect(receivedMessage?.from?.id).toBe(user.payload.id);
-        expect(receivedMessage?.chat?.id).toBe(user.asChat.payload.id);
-        expect(receivedMessage?.chat?.type).toBe("private");
-        expect(receivedMessage?.id).toBe(message.payload.message_id);
-        expect(receivedMessage?.createdAt).toBe(message.payload.date);
+        expect(env.apiCalls[0].method).toBe("sendMessage");
     });
 });
+```
+
+## API
+
+### `TelegramTestEnvironment`
+
+The central orchestrator. Wraps a GramIO `Bot`, intercepts all outgoing API calls, and provides factories for users and chats.
+
+```ts
+const bot = new Bot("test");
+const env = new TelegramTestEnvironment(bot);
+```
+
+- **`env.createUser(payload?)`** — creates a `UserObject` linked to the environment
+- **`env.createChat(payload?)`** — creates a `ChatObject` (group, supergroup, channel, etc.)
+- **`env.emitUpdate(update)`** — sends a raw `TelegramUpdate` or `MessageObject` to the bot
+- **`env.apiCalls`** — array of `{ method, params, response }` recording every API call the bot made
+- **`env.users`** / **`env.chats`** — all created users and chats
+
+### `UserObject` — the primary actor
+
+Users drive the test scenario. Create them via `env.createUser()`:
+
+```ts
+const user = env.createUser({ first_name: "Alice" });
+```
+
+#### `user.sendMessage(text)` — send a PM to the bot
+
+```ts
+const msg = await user.sendMessage("Hello");
+```
+
+#### `user.sendMessage(chat, text)` — send a message to a group
+
+```ts
+const group = env.createChat({ type: "group", title: "Test Group" });
+await user.sendMessage(group, "/start");
+```
+
+#### `user.join(chat)` / `user.leave(chat)` — join or leave a group
+
+Emits a `chat_member` update and a service message (`new_chat_members` / `left_chat_member`). Updates `chat.members` set.
+
+```ts
+await user.join(group);
+expect(group.members.has(user)).toBe(true);
+
+await user.leave(group);
+expect(group.members.has(user)).toBe(false);
+```
+
+#### `user.click(callbackData, message?)` — click an inline button
+
+Emits a `callback_query` update.
+
+```ts
+const msg = await user.sendMessage("Pick an option");
+await user.click("option:1", msg);
+```
+
+### `ChatObject`
+
+Wraps `TelegramChat` with in-memory state tracking:
+
+- **`chat.members`** — `Set<UserObject>` of current members
+- **`chat.messages`** — `MessageObject[]` history of all messages in the chat
+
+### `MessageObject`
+
+Wraps `TelegramMessage` with builder methods:
+
+```ts
+const message = new MessageObject({ text: "Hello" })
+    .from(user)
+    .chat(group);
+```
+
+### `CallbackQueryObject`
+
+Wraps `TelegramCallbackQuery` with builder methods:
+
+```ts
+const cbQuery = new CallbackQueryObject()
+    .from(user)
+    .data("action:1")
+    .message(msg);
+```
+
+## Inspecting Bot API Calls
+
+The environment intercepts all outgoing API calls (no real HTTP requests are made) and records them:
+
+```ts
+const bot = new Bot("test");
+bot.on("message", async (ctx) => {
+    await ctx.send("Reply!");
+});
+
+const env = new TelegramTestEnvironment(bot);
+const user = env.createUser();
+
+await user.sendMessage("Hello");
+
+expect(env.apiCalls).toHaveLength(1);
+expect(env.apiCalls[0].method).toBe("sendMessage");
+expect(env.apiCalls[0].params.text).toBe("Reply!");
 ```
