@@ -1,9 +1,17 @@
-import type {
-	AnyBot,
-	TelegramChat,
-	TelegramUpdate,
-	TelegramUser,
+import {
+	TelegramError,
+	type AnyBot,
+	type TelegramChat,
+	type TelegramUpdate,
+	type TelegramUser,
 } from "gramio";
+import type {
+	APIMethods,
+	APIMethodParams,
+	APIMethodReturn,
+	TelegramAPIResponseError,
+	TelegramResponseParameters,
+} from "@gramio/types";
 import { CallbackQueryObject } from "./objects/callback-query.ts";
 import { ChatObject } from "./objects/chat.ts";
 import { MessageObject } from "./objects/message.ts";
@@ -14,9 +22,30 @@ export { CallbackQueryObject, ChatObject, MessageObject, UserObject };
 export let lastUpdateId = 0;
 
 export interface ApiCall {
-	method: string;
-	params: Record<string, unknown>;
+	method: keyof APIMethods;
+	params: unknown;
 	response: unknown;
+}
+
+/**
+ * Create a TelegramError for use with `env.onApi()`.
+ * The proxy re-creates it with the correct method and params at call time.
+ */
+export function apiError(
+	code: number,
+	description: string,
+	parameters?: TelegramResponseParameters,
+): TelegramError<never> {
+	return new TelegramError<never>(
+		{
+			ok: false,
+			error_code: code,
+			description,
+			parameters: parameters ?? {},
+		},
+		"" as never,
+		undefined as never,
+	);
 }
 
 export class TelegramTestEnvironment {
@@ -29,6 +58,11 @@ export class TelegramTestEnvironment {
 	public apiCalls: ApiCall[] = [];
 
 	private lastMockMessageId = 0;
+
+	private apiHandlers = new Map<
+		keyof APIMethods,
+		(params: never) => unknown
+	>();
 
 	constructor(bot: AnyBot) {
 		this.bot = bot;
@@ -46,9 +80,31 @@ export class TelegramTestEnvironment {
 						return undefined;
 					}
 
+					const method = prop as keyof APIMethods;
+
 					return (params: Record<string, unknown> = {}) => {
-						const response = env.mockApiResponse(prop, params);
-						env.apiCalls.push({ method: prop, params, response });
+						const handler = env.apiHandlers.get(method);
+						const response = handler
+							? handler(params as never)
+							: env.mockApiResponse(method, params);
+
+						env.apiCalls.push({ method, params, response });
+
+						if (response instanceof TelegramError) {
+							return Promise.reject(
+								new TelegramError(
+									{
+										ok: false,
+										error_code: response.code,
+										description: response.message,
+										parameters: response.payload ?? {},
+									},
+									prop as never,
+									params as never,
+								),
+							);
+						}
+
 						return Promise.resolve(response);
 					};
 				},
@@ -63,7 +119,7 @@ export class TelegramTestEnvironment {
 	}
 
 	private mockApiResponse(
-		method: string,
+		method: keyof APIMethods,
 		params: Record<string, unknown>,
 	): unknown {
 		if (method === "sendMessage") {
@@ -76,6 +132,33 @@ export class TelegramTestEnvironment {
 		}
 
 		return true;
+	}
+
+	onApi<Method extends keyof APIMethods>(
+		method: Method,
+		handler:
+			| APIMethodReturn<Method>
+			| TelegramError<Method>
+			| ((
+					params: APIMethodParams<Method>,
+			  ) => APIMethodReturn<Method> | TelegramError<Method>),
+	) {
+		if (typeof handler === "function") {
+			this.apiHandlers.set(
+				method,
+				handler as (params: never) => unknown,
+			);
+		} else {
+			this.apiHandlers.set(method, () => handler);
+		}
+	}
+
+	offApi(method?: keyof APIMethods) {
+		if (method) {
+			this.apiHandlers.delete(method);
+		} else {
+			this.apiHandlers.clear();
+		}
 	}
 
 	emitUpdate(update: TelegramUpdate | MessageObject) {

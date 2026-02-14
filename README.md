@@ -49,6 +49,8 @@ const env = new TelegramTestEnvironment(bot);
 - **`env.createUser(payload?)`** — creates a `UserObject` linked to the environment
 - **`env.createChat(payload?)`** — creates a `ChatObject` (group, supergroup, channel, etc.)
 - **`env.emitUpdate(update)`** — sends a raw `TelegramUpdate` or `MessageObject` to the bot
+- **`env.onApi(method, handler)`** — override the response for a specific API method (see [Mocking API Responses](#mocking-api-responses))
+- **`env.offApi(method?)`** — remove a custom handler (or all handlers if no method given)
 - **`env.apiCalls`** — array of `{ method, params, response }` recording every API call the bot made
 - **`env.users`** / **`env.chats`** — all created users and chats
 
@@ -140,4 +142,50 @@ await user.sendMessage("Hello");
 expect(env.apiCalls).toHaveLength(1);
 expect(env.apiCalls[0].method).toBe("sendMessage");
 expect(env.apiCalls[0].params.text).toBe("Reply!");
+```
+
+## Mocking API Responses
+
+Use `env.onApi()` to control what the bot receives from the Telegram API. Accepts a static value or a dynamic handler function:
+
+```ts
+// Static response
+env.onApi("getMe", { id: 1, is_bot: true, first_name: "TestBot" });
+
+// Dynamic response based on params
+env.onApi("sendMessage", (params) => ({
+    message_id: 1,
+    date: Date.now(),
+    chat: { id: params.chat_id, type: "private" },
+    text: params.text,
+}));
+```
+
+### Simulating Errors
+
+Use `apiError()` to create a `TelegramError` that the bot will receive as a rejected promise — matching exactly how real Telegram API errors work in GramIO:
+
+```ts
+import { TelegramTestEnvironment, apiError } from "@gramio/test";
+
+// Bot is blocked by user
+env.onApi("sendMessage", apiError(403, "Forbidden: bot was blocked by the user"));
+
+// Rate limiting
+env.onApi("sendMessage", apiError(429, "Too Many Requests", { retry_after: 30 }));
+
+// Conditional — error for some chats, success for others
+env.onApi("sendMessage", (params) => {
+    if (params.chat_id === blockedUserId) {
+        return apiError(403, "Forbidden: bot was blocked by the user");
+    }
+    return { message_id: 1, date: Date.now(), chat: { id: params.chat_id, type: "private" }, text: params.text };
+});
+```
+
+### Resetting
+
+```ts
+env.offApi("sendMessage"); // reset specific method
+env.offApi();              // reset all overrides
 ```
