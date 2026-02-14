@@ -1,4 +1,4 @@
-import type { TelegramMessage, TelegramUser } from "gramio";
+import type { TelegramChat, TelegramMessage, TelegramUser } from "gramio";
 import type { Optional } from "../utils.ts";
 import { ChatObject } from "./chat.ts";
 import { UserObject } from "./user.ts";
@@ -36,6 +36,23 @@ export class MessageObject {
 					this.payload.message_id ?? 0,
 				);
 			}
+		}
+
+		return this;
+	}
+
+	chat(chat: ChatObject | TelegramChat) {
+		if (chat instanceof ChatObject) {
+			this.payload.chat = chat.payload;
+		} else {
+			this.payload.chat = chat;
+		}
+
+		if (!lastMessageIdPerChat.has(this.payload.chat.id)) {
+			lastMessageIdPerChat.set(
+				this.payload.chat.id,
+				this.payload.message_id ?? 0,
+			);
 		}
 
 		return this;
