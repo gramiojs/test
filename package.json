@@ -1,13 +1,13 @@
 {
-	"name": "@gramio/objects-builder",
+	"name": "@gramio/test",
 	"version": "0.0.1",
-	"description": "server-side parser for telegram init-data",
-	"keywords": ["gramio", "telegram", "objects", "builder", "tma", "webapp"],
-	"homepage": "https://github.com/gramiojs/objects-builder",
-	"readme": "https://github.com/gramiojs/objects-builder",
+	"description": "Event-driven test framework for GramIO Telegram bots",
+	"keywords": ["gramio", "telegram", "test", "testing", "bot", "framework"],
+	"homepage": "https://gramio.dev/testing",
+	"readme": "https://gramio.dev/testing",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/gramiojs/objects-builder.git"
+		"url": "git+https://github.com/gramiojs/test.git"
 	},
 	"author": {
 		"url": "https://github.com/kravetsone",

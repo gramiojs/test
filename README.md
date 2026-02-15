@@ -1,7 +1,7 @@
 # @gramio/test
 
-[![npm](https://img.shields.io/npm/v/@gramio/objects-builder?logo=npm&style=flat&labelColor=000&color=3b82f6)](https://www.npmjs.org/package/@gramio/objects-builder)
-[![npm downloads](https://img.shields.io/npm/dw/@gramio/objects-builder?logo=npm&style=flat&labelColor=000&color=3b82f6)](https://www.npmjs.org/package/@gramio/objects-builder)
+[![npm](https://img.shields.io/npm/v/@gramio/test?logo=npm&style=flat&labelColor=000&color=3b82f6)](https://www.npmjs.org/package/@gramio/test)
+[![npm downloads](https://img.shields.io/npm/dw/@gramio/test?logo=npm&style=flat&labelColor=000&color=3b82f6)](https://www.npmjs.org/package/@gramio/test)
 [![JSR](https://jsr.io/badges/@gramio/test)](https://jsr.io/@gramio/test)
 [![JSR Score](https://jsr.io/badges/@gramio/test/score)](https://jsr.io/@gramio/test)
 
