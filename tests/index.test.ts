@@ -362,7 +362,7 @@ describe("Reactions", () => {
 		expect(received?.newReactions).toHaveLength(2);
 	});
 
-	it("should include oldReactions when provided (simple form)", async () => {
+	it("should auto-compute old_reaction when changing reaction", async () => {
 		const bot = new Bot("test");
 		let received: ContextType<Bot, "message_reaction"> | undefined;
 		bot.on("message_reaction", (ctx) => {
@@ -373,7 +373,8 @@ describe("Reactions", () => {
 		const user = env.createUser();
 		const msg = await user.sendMessage("Hello");
 
-		await user.react("❤", msg, { oldReactions: ["👍"] });
+		await user.react("👍", msg);       // sets memory: ["👍"]
+		await user.react("❤", msg);        // old auto = ["👍"], new = ["❤"]
 
 		expect(received?.oldReactions).toHaveLength(1);
 		expect(received?.oldReactions[0]).toMatchObject({ type: "emoji", emoji: "👍" });
@@ -396,20 +397,19 @@ describe("Reactions", () => {
 		expect(triggered).toBe(true);
 	});
 
-	it("should not trigger bot.reaction() handler for removed reactions", async () => {
+	it("should not trigger bot.reaction() handler when removing a reaction", async () => {
 		const bot = new Bot("test");
-		let triggered = false;
-		bot.reaction("👍", async () => {
-			triggered = true;
-		});
+		let triggerCount = 0;
+		bot.reaction("👍", async () => { triggerCount++; });
 
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser();
 		const msg = await user.sendMessage("Hello");
 
-		await user.react([], msg, { oldReactions: ["👍"] });
+		await user.react("👍", msg);  // triggers (adds 👍)
+		await user.react([], msg);    // removes 👍 — should NOT trigger again
 
-		expect(triggered).toBe(false);
+		expect(triggerCount).toBe(1);
 	});
 
 	it("should emit message_reaction via ReactObject builder", async () => {
@@ -477,6 +477,75 @@ describe("Reactions", () => {
 		await user.react(new ReactObject().on(msg).add("🔥"));
 
 		expect(triggered).toBe(true);
+	});
+
+	it("should track reactions per user on the message", async () => {
+		const env = new TelegramTestEnvironment(new Bot("test"));
+		const alice = env.createUser({ first_name: "Alice" });
+		const bob = env.createUser({ first_name: "Bob" });
+		const msg = await alice.sendMessage("Hello");
+
+		await alice.react("👍", msg);
+		await bob.react("❤", msg);
+
+		expect(msg.reactions.get(alice.payload.id)).toEqual(["👍"]);
+		expect(msg.reactions.get(bob.payload.id)).toEqual(["❤"]);
+	});
+
+	it("should update message.reactions when reaction changes", async () => {
+		const env = new TelegramTestEnvironment(new Bot("test"));
+		const user = env.createUser();
+		const msg = await user.sendMessage("Hello");
+
+		await user.react("👍", msg);
+		expect(msg.reactions.get(user.payload.id)).toEqual(["👍"]);
+
+		await user.react("🔥", msg);
+		expect(msg.reactions.get(user.payload.id)).toEqual(["🔥"]);
+	});
+
+	it("should clear message.reactions when reacting with empty array", async () => {
+		const env = new TelegramTestEnvironment(new Bot("test"));
+		const user = env.createUser();
+		const msg = await user.sendMessage("Hello");
+
+		await user.react("👍", msg);
+		expect(msg.reactions.get(user.payload.id)).toEqual(["👍"]);
+
+		await user.react([], msg);
+		expect(msg.reactions.has(user.payload.id)).toBe(false);
+	});
+
+	it("ReactObject auto-tracks via .on(msg)", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message_reaction"> | undefined;
+		bot.on("message_reaction", (ctx) => { received = ctx; });
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const msg = await user.sendMessage("Hello");
+
+		await user.react(new ReactObject().on(msg).add("👍"));  // memory: ["👍"]
+		await user.react(new ReactObject().on(msg).add("❤"));   // old auto = ["👍"]
+
+		expect(received?.oldReactions[0]).toMatchObject({ type: "emoji", emoji: "👍" });
+		expect(received?.newReactions[0]).toMatchObject({ type: "emoji", emoji: "❤" });
+	});
+
+	it("ReactObject explicit .remove() overrides auto-tracking", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message_reaction"> | undefined;
+		bot.on("message_reaction", (ctx) => { received = ctx; });
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const msg = await user.sendMessage("Hello");
+
+		await user.react("👍", msg);  // memory: ["👍"]
+		// .remove("😢") explicitly sets old_reaction — auto-tracking is skipped
+		await user.react(new ReactObject().on(msg).add("❤").remove("😢"));
+
+		expect(received?.oldReactions[0]).toMatchObject({ type: "emoji", emoji: "😢" });
 	});
 
 	it("ReactObject.from() overrides user", async () => {
@@ -702,7 +771,7 @@ describe("Fluent scope API", () => {
 		expect(received?.newReactions[0]).toMatchObject({ type: "emoji", emoji: "👍" });
 	});
 
-	it("user.on(msg).react() supports oldReactions option", async () => {
+	it("user.on(msg).react() auto-tracks old reaction via message state", async () => {
 		const bot = new Bot("test");
 		let received: ContextType<Bot, "message_reaction"> | undefined;
 		bot.on("message_reaction", (ctx) => { received = ctx; });
@@ -711,7 +780,8 @@ describe("Fluent scope API", () => {
 		const user = env.createUser();
 		const msg = await user.sendMessage("Hello");
 
-		await user.on(msg).react("❤", { oldReactions: ["👍"] });
+		await user.on(msg).react("👍");    // memory: ["👍"]
+		await user.on(msg).react("❤");     // old auto = ["👍"], new = ["❤"]
 
 		expect(received?.newReactions[0]).toMatchObject({ type: "emoji", emoji: "❤" });
 		expect(received?.oldReactions[0]).toMatchObject({ type: "emoji", emoji: "👍" });

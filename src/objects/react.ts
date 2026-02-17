@@ -14,6 +14,9 @@ export class ReactObject {
 		new_reaction: TelegramReactionType[];
 	};
 
+	/** @internal Used by `user.react()` to auto-read/write reaction state. */
+	_message?: MessageObject;
+
 	constructor() {
 		this.payload = {
 			date: Math.floor(Date.now() / 1000),
@@ -28,8 +31,9 @@ export class ReactObject {
 		return this;
 	}
 
-	/** Set the message being reacted to. Also infers the chat from the message. */
+	/** Set the message being reacted to. Infers chat and enables reaction state tracking. */
 	on(message: MessageObject) {
+		this._message = message;
 		this.payload.message_id = message.payload.message_id;
 		if (message.payload.chat) {
 			this.payload.chat = message.payload.chat;

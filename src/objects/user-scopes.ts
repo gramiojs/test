@@ -10,12 +10,11 @@ export class UserOnMessageScope {
 		private readonly message: MessageObject,
 	) {}
 
-	/** React to the scoped message. Accepts a single emoji, array, or ReactObject. */
+	/** React to the scoped message. Old reactions are tracked automatically. */
 	react(
 		reactOrEmojis: ReactObject | TelegramReactionTypeEmojiEmoji | TelegramReactionTypeEmojiEmoji[],
-		options?: { oldReactions?: TelegramReactionTypeEmojiEmoji[] },
 	) {
-		return this.user.react(reactOrEmojis as TelegramReactionTypeEmojiEmoji, this.message, options);
+		return this.user.react(reactOrEmojis as TelegramReactionTypeEmojiEmoji, this.message);
 	}
 
 	/** Click an inline button on the scoped message. */

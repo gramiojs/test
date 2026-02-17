@@ -129,29 +129,61 @@ const msg = await user.sendMessage("Pick an option");
 await user.click("option:1", msg);
 ```
 
-#### `user.react(emojis, message?, options?)` — react to a message
+#### `user.react(emojis, message?)` — react to a message
 
 Emits a `message_reaction` update. Works with `bot.reaction()` handlers.
+
+**Reaction state is tracked automatically on each `MessageObject`** — you never need to declare what the user previously had. The `old_reaction` field of the emitted update is filled in from the message's in-memory state.
 
 ```ts
 const msg = await user.sendMessage("Nice bot!");
 
-// Single emoji
+// Add a reaction (old: [], new: ["👍"])
 await user.react("👍", msg);
 
-// Multiple emojis (array)
-await user.react(["👍", "❤"], msg);
+// Change reaction — old is auto-computed from memory (old: ["👍"], new: ["❤"])
+await user.react("❤", msg);
 
-// Simulate changing a reaction (declare previous reactions via oldReactions)
-await user.react("❤", msg, { oldReactions: ["👍"] });
+// React with multiple emojis
+await user.react(["👍", "🔥"], msg);
 
-// Chainable builder via ReactObject
-await user.react(
-    new ReactObject()
-        .on(msg)       // attach to message (infers chat)
-        .add("👍", "🔥") // added reactions (new_reaction)
-        .remove("😢")    // removed reactions (old_reaction)
-);
+// Remove all reactions — pass an empty array (old: auto, new: [])
+await user.react([], msg);
+```
+
+The current state is accessible on the message object:
+
+```ts
+msg.reactions.get(user.payload.id); // e.g. ["❤"]
+msg.reactions.has(user.payload.id); // false after react([])
+```
+
+Multiple users can react independently — each user's state is tracked separately:
+
+```ts
+await alice.react("👍", msg);
+await bob.react("❤", msg);
+
+msg.reactions.get(alice.payload.id); // ["👍"]
+msg.reactions.get(bob.payload.id);   // ["❤"]
+```
+
+**Using `ReactObject` for full control:**
+
+```ts
+// old_reaction is also auto-tracked when .on(msg) is used
+await user.react(new ReactObject().on(msg).add("👍", "🔥"));
+
+// Explicit .remove() overrides auto-tracking for old_reaction
+await user.react(new ReactObject().on(msg).add("❤").remove("😢"));
+```
+
+**Via scoped API — same auto-tracking applies:**
+
+```ts
+await user.on(msg).react("👍");   // memory: ["👍"]
+await user.on(msg).react("❤");    // old auto = ["👍"], new = ["❤"]
+await user.on(msg).react([]);     // remove all, old auto = ["❤"]
 ```
 
 #### `user.sendInlineQuery(query, chatOrOptions?, options?)` — send an inline query

@@ -1,3 +1,4 @@
+import type { TelegramReactionTypeEmojiEmoji } from "@gramio/types";
 import type { TelegramChat, TelegramMessage, TelegramUser } from "gramio";
 import type { Optional } from "../utils.ts";
 import { ChatObject } from "./chat.ts";
@@ -8,6 +9,9 @@ export const lastMessageIdPerChat = new Map<number, number>();
 export class MessageObject {
 	public type = "message";
 	public payload: Optional<TelegramMessage, "chat">;
+
+	/** Per-user reaction state. Keyed by `user.payload.id`. Updated automatically by `user.react()`. */
+	public reactions = new Map<number, TelegramReactionTypeEmojiEmoji[]>();
 
 	constructor(payload: Partial<TelegramMessage> = {}) {
 		this.payload = {

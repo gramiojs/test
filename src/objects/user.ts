@@ -208,7 +208,6 @@ export class UserObject {
 			| TelegramReactionTypeEmojiEmoji
 			| TelegramReactionTypeEmojiEmoji[],
 		message?: MessageObject,
-		options?: { oldReactions?: TelegramReactionTypeEmojiEmoji[] },
 	): Promise<void> {
 		if (!this.environment) {
 			throw new Error(
@@ -217,24 +216,32 @@ export class UserObject {
 		}
 
 		let reactionPayload: ReactObject["payload"];
+		let trackedMessage: MessageObject | undefined;
 
 		if (reactOrEmojis instanceof ReactObject) {
 			reactionPayload = reactOrEmojis.payload;
-			// fill in user and chat from this UserObject if not explicitly set
+			trackedMessage = reactOrEmojis._message ?? message;
+
 			if (!reactionPayload.user) reactionPayload.user = this.payload;
-			if (!reactionPayload.chat && message) {
-				reactionPayload.chat = message.payload.chat ?? this.asChat.payload;
-				reactionPayload.message_id ??= message.payload.message_id;
+			if (!reactionPayload.chat && trackedMessage) {
+				reactionPayload.chat = trackedMessage.payload.chat ?? this.asChat.payload;
+				reactionPayload.message_id ??= trackedMessage.payload.message_id;
+			}
+			// auto-populate old_reaction from memory when .remove() was never called
+			if (reactionPayload.old_reaction.length === 0 && trackedMessage) {
+				const prev = trackedMessage.reactions.get(this.payload.id) ?? [];
+				reactionPayload.old_reaction = prev.map((emoji) => ({ type: "emoji" as const, emoji }));
 			}
 		} else {
+			trackedMessage = message;
 			const newEmojis = Array.isArray(reactOrEmojis) ? reactOrEmojis : [reactOrEmojis];
-			const oldEmojis = options?.oldReactions ?? [];
+			const prevEmojis = message?.reactions.get(this.payload.id) ?? [];
 			reactionPayload = {
 				chat: message?.payload.chat ?? this.asChat.payload,
 				message_id: message?.payload.message_id ?? 0,
 				user: this.payload,
 				date: Math.floor(Date.now() / 1000),
-				old_reaction: oldEmojis.map((emoji) => ({ type: "emoji" as const, emoji })),
+				old_reaction: prevEmojis.map((emoji) => ({ type: "emoji" as const, emoji })),
 				new_reaction: newEmojis.map((emoji) => ({ type: "emoji" as const, emoji })),
 			};
 		}
@@ -243,6 +250,18 @@ export class UserObject {
 			update_id: 0,
 			message_reaction: reactionPayload as Required<ReactObject["payload"]>,
 		});
+
+		// persist new reaction state on the message
+		if (trackedMessage) {
+			const newEmojis = reactionPayload.new_reaction
+				.filter((r): r is { type: "emoji"; emoji: TelegramReactionTypeEmojiEmoji } => r.type === "emoji")
+				.map((r) => r.emoji);
+			if (newEmojis.length === 0) {
+				trackedMessage.reactions.delete(this.payload.id);
+			} else {
+				trackedMessage.reactions.set(this.payload.id, newEmojis);
+			}
+		}
 	}
 
 	async sendInlineQuery(
