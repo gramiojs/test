@@ -14,10 +14,14 @@ import type {
 } from "@gramio/types";
 import { CallbackQueryObject } from "./objects/callback-query.ts";
 import { ChatObject } from "./objects/chat.ts";
+import { ChosenInlineResultObject } from "./objects/chosen-inline-result.ts";
+import { InlineQueryObject } from "./objects/inline-query.ts";
 import { MessageObject } from "./objects/message.ts";
+import { ReactObject } from "./objects/react.ts";
+import { UserInChatScope, UserOnMessageScope } from "./objects/user-scopes.ts";
 import { UserObject } from "./objects/user.ts";
 
-export { CallbackQueryObject, ChatObject, MessageObject, UserObject };
+export { CallbackQueryObject, ChatObject, ChosenInlineResultObject, InlineQueryObject, MessageObject, ReactObject, UserInChatScope, UserOnMessageScope, UserObject };
 
 export let lastUpdateId = 0;
 

@@ -1,8 +1,12 @@
-import type { TelegramUser } from "@gramio/types";
+import type { TelegramInlineQueryChatType, TelegramReactionTypeEmojiEmoji, TelegramUser } from "@gramio/types";
 import type { TelegramTestEnvironment } from "../index.ts";
 import { CallbackQueryObject } from "./callback-query.ts";
 import { ChatObject } from "./chat.ts";
+import { ChosenInlineResultObject } from "./chosen-inline-result.ts";
+import { InlineQueryObject } from "./inline-query.ts";
 import { MessageObject, lastMessageIdPerChat } from "./message.ts";
+import { ReactObject } from "./react.ts";
+import { UserInChatScope, UserOnMessageScope } from "./user-scopes.ts";
 
 export let lastUserId = 0;
 
@@ -196,5 +200,121 @@ export class UserObject {
 		});
 
 		return cbQuery;
+	}
+
+	async react(
+		reactOrEmojis:
+			| ReactObject
+			| TelegramReactionTypeEmojiEmoji
+			| TelegramReactionTypeEmojiEmoji[],
+		message?: MessageObject,
+		options?: { oldReactions?: TelegramReactionTypeEmojiEmoji[] },
+	): Promise<void> {
+		if (!this.environment) {
+			throw new Error(
+				"UserObject is not attached to a TelegramTestEnvironment. Use env.createUser() to create users.",
+			);
+		}
+
+		let reactionPayload: ReactObject["payload"];
+
+		if (reactOrEmojis instanceof ReactObject) {
+			reactionPayload = reactOrEmojis.payload;
+			// fill in user and chat from this UserObject if not explicitly set
+			if (!reactionPayload.user) reactionPayload.user = this.payload;
+			if (!reactionPayload.chat && message) {
+				reactionPayload.chat = message.payload.chat ?? this.asChat.payload;
+				reactionPayload.message_id ??= message.payload.message_id;
+			}
+		} else {
+			const newEmojis = Array.isArray(reactOrEmojis) ? reactOrEmojis : [reactOrEmojis];
+			const oldEmojis = options?.oldReactions ?? [];
+			reactionPayload = {
+				chat: message?.payload.chat ?? this.asChat.payload,
+				message_id: message?.payload.message_id ?? 0,
+				user: this.payload,
+				date: Math.floor(Date.now() / 1000),
+				old_reaction: oldEmojis.map((emoji) => ({ type: "emoji" as const, emoji })),
+				new_reaction: newEmojis.map((emoji) => ({ type: "emoji" as const, emoji })),
+			};
+		}
+
+		await this.environment.emitUpdate({
+			update_id: 0,
+			message_reaction: reactionPayload as Required<ReactObject["payload"]>,
+		});
+	}
+
+	async sendInlineQuery(
+		query: string,
+		chatOrOptions?: ChatObject | { offset?: string; chat_type?: TelegramInlineQueryChatType },
+		options?: { offset?: string },
+	): Promise<InlineQueryObject> {
+		if (!this.environment) {
+			throw new Error(
+				"UserObject is not attached to a TelegramTestEnvironment. Use env.createUser() to create users.",
+			);
+		}
+
+		let chat_type: TelegramInlineQueryChatType | undefined;
+		let offset = "";
+
+		if (chatOrOptions instanceof ChatObject) {
+			chat_type = chatOrOptions.payload.type as TelegramInlineQueryChatType;
+			offset = options?.offset ?? "";
+		} else {
+			chat_type = chatOrOptions?.chat_type;
+			offset = chatOrOptions?.offset ?? "";
+		}
+
+		const inlineQuery = new InlineQueryObject({
+			from: this.payload,
+			query,
+			offset,
+			chat_type,
+		});
+
+		await this.environment.emitUpdate({
+			update_id: 0,
+			inline_query: inlineQuery.payload,
+		});
+
+		return inlineQuery;
+	}
+
+	/** Scope this user to a chat, enabling fluent actions: `.sendMessage()`, `.sendInlineQuery()`, `.join()`, `.leave()`, `.on(msg)`. */
+	in(chat: ChatObject): UserInChatScope {
+		return new UserInChatScope(this, chat);
+	}
+
+	/** Scope this user to a message, enabling fluent actions: `.react()`, `.click()`. */
+	on(message: MessageObject): UserOnMessageScope {
+		return new UserOnMessageScope(this, message);
+	}
+
+	async chooseInlineResult(
+		resultId: string,
+		query: string,
+		options?: { inline_message_id?: string },
+	): Promise<ChosenInlineResultObject> {
+		if (!this.environment) {
+			throw new Error(
+				"UserObject is not attached to a TelegramTestEnvironment. Use env.createUser() to create users.",
+			);
+		}
+
+		const result = new ChosenInlineResultObject({
+			from: this.payload,
+			result_id: resultId,
+			query,
+			inline_message_id: options?.inline_message_id,
+		});
+
+		await this.environment.emitUpdate({
+			update_id: 0,
+			chosen_inline_result: result.payload,
+		});
+
+		return result;
 	}
 }

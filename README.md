@@ -87,6 +87,39 @@ await user.leave(group);
 expect(group.members.has(user)).toBe(false);
 ```
 
+#### `user.in(chat)` — scope to a chat
+
+Returns a `UserInChatScope` with the chat pre-bound. All methods on the scope delegate to the underlying user.
+
+```ts
+const group = env.createChat({ type: "group" });
+
+await user.in(group).sendMessage("Hello");
+await user.in(group).sendInlineQuery("cats");          // chat_type: "group"
+await user.in(group).sendInlineQuery("cats", { offset: "10" });
+await user.in(group).join();
+await user.in(group).leave();
+```
+
+Chain `.on(msg)` to reach the message scope:
+
+```ts
+const msg = await user.sendMessage(group, "Pick one");
+await user.in(group).on(msg).react("👍");
+await user.in(group).on(msg).click("choice:A");
+```
+
+#### `user.on(msg)` — scope to a message
+
+Returns a `UserOnMessageScope` with the message pre-bound. Useful when you already have a message and don't need to re-state the chat.
+
+```ts
+const msg = await user.sendMessage("Nice bot!");
+await user.on(msg).react("👍");
+await user.on(msg).react("❤", { oldReactions: ["👍"] });
+await user.on(msg).click("action:1");
+```
+
 #### `user.click(callbackData, message?)` — click an inline button
 
 Emits a `callback_query` update.
@@ -94,6 +127,61 @@ Emits a `callback_query` update.
 ```ts
 const msg = await user.sendMessage("Pick an option");
 await user.click("option:1", msg);
+```
+
+#### `user.react(emojis, message?, options?)` — react to a message
+
+Emits a `message_reaction` update. Works with `bot.reaction()` handlers.
+
+```ts
+const msg = await user.sendMessage("Nice bot!");
+
+// Single emoji
+await user.react("👍", msg);
+
+// Multiple emojis (array)
+await user.react(["👍", "❤"], msg);
+
+// Simulate changing a reaction (declare previous reactions via oldReactions)
+await user.react("❤", msg, { oldReactions: ["👍"] });
+
+// Chainable builder via ReactObject
+await user.react(
+    new ReactObject()
+        .on(msg)       // attach to message (infers chat)
+        .add("👍", "🔥") // added reactions (new_reaction)
+        .remove("😢")    // removed reactions (old_reaction)
+);
+```
+
+#### `user.sendInlineQuery(query, chatOrOptions?, options?)` — send an inline query
+
+Emits an `inline_query` update. Works with `bot.inlineQuery()` handlers. Pass a `ChatObject` as the second argument to automatically set `chat_type`.
+
+```ts
+// Simple — no chat context
+const q = await user.sendInlineQuery("search cats");
+
+// With chat — chat_type is derived automatically
+const group = env.createChat({ type: "group" });
+const q = await user.sendInlineQuery("search cats", group);
+
+// With options only
+await user.sendInlineQuery("search dogs", { offset: "10" });
+
+// With chat + offset
+await user.sendInlineQuery("search dogs", group, { offset: "10" });
+```
+
+#### `user.chooseInlineResult(resultId, query, options?)` — choose an inline result
+
+Emits a `chosen_inline_result` update. Works with `bot.chosenInlineResult()` handlers.
+
+```ts
+await user.chooseInlineResult("result-1", "search cats");
+
+// With inline_message_id for inline-mode messages
+await user.chooseInlineResult("result-1", "search cats", { inline_message_id: "abc" });
 ```
 
 ### `ChatObject`
@@ -122,6 +210,49 @@ const cbQuery = new CallbackQueryObject()
     .from(user)
     .data("action:1")
     .message(msg);
+```
+
+### `ReactObject`
+
+Chainable builder for `message_reaction` updates. Use with `user.react()` or emit directly via `env.emitUpdate()`.
+
+| Method | Description |
+|--------|-------------|
+| `.from(user)` | Set the user who reacted (auto-filled by `user.react()`) |
+| `.on(message)` | Attach to a message and infer the chat |
+| `.inChat(chat)` | Override the chat explicitly |
+| `.add(...emojis)` | Emojis being added (`new_reaction`) |
+| `.remove(...emojis)` | Emojis being removed (`old_reaction`) |
+
+```ts
+const reaction = new ReactObject()
+    .on(msg)
+    .add("👍", "🔥")
+    .remove("😢");
+
+await user.react(reaction);
+```
+
+### `InlineQueryObject`
+
+Wraps `TelegramInlineQuery` with builder methods:
+
+```ts
+const inlineQuery = new InlineQueryObject()
+    .from(user)
+    .query("search cats")
+    .offset("0");
+```
+
+### `ChosenInlineResultObject`
+
+Wraps `TelegramChosenInlineResult` with builder methods:
+
+```ts
+const result = new ChosenInlineResultObject()
+    .from(user)
+    .resultId("result-1")
+    .query("search cats");
 ```
 
 ## Inspecting Bot API Calls
