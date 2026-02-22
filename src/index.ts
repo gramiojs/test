@@ -22,6 +22,7 @@ import { UserInChatScope, UserOnMessageScope } from "./objects/user-scopes.ts";
 import { UserObject } from "./objects/user.ts";
 
 export { CallbackQueryObject, ChatObject, ChosenInlineResultObject, InlineQueryObject, MessageObject, ReactObject, UserInChatScope, UserOnMessageScope, UserObject };
+export type { MediaOptions, MessageOptions } from "./objects/user.ts";
 
 export let lastUpdateId = 0;
 

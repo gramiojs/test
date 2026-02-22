@@ -17,7 +17,7 @@ bun add -d @gramio/test
 
 ```ts
 import { describe, expect, it } from "bun:test";
-import { Bot } from "gramio";
+import { Bot, format, bold } from "gramio";
 import { TelegramTestEnvironment } from "@gramio/test";
 
 describe("My bot", () => {
@@ -28,9 +28,20 @@ describe("My bot", () => {
         const env = new TelegramTestEnvironment(bot);
         const user = env.createUser({ first_name: "Alice" });
 
-        await user.sendMessage("/start");
+        await user.sendCommand("start");
 
         expect(env.apiCalls[0].method).toBe("sendMessage");
+    });
+
+    it("should handle formatted messages", async () => {
+        const bot = new Bot("test");
+        bot.on("message", (ctx) => ctx.send("Got it!"));
+
+        const env = new TelegramTestEnvironment(bot);
+        const user = env.createUser();
+
+        // FormattableString from gramio's format`` tag — text and entities extracted automatically
+        await user.sendMessage(format`Check out ${bold("this")} link`);
     });
 });
 ```
@@ -62,17 +73,102 @@ Users drive the test scenario. Create them via `env.createUser()`:
 const user = env.createUser({ first_name: "Alice" });
 ```
 
-#### `user.sendMessage(text)` — send a PM to the bot
+#### `user.sendMessage(text, options?)` — send a PM to the bot
+
+Accepts a plain string or a `format\`\`` `FormattableString` (text and entities are extracted automatically). Pass `MessageOptions` to attach extra entities or set a reply.
 
 ```ts
+import { format, bold, italic } from "gramio";
+
 const msg = await user.sendMessage("Hello");
+
+// FormattableString — entities are auto-extracted
+await user.sendMessage(format`Hello ${bold("world")}`);
+
+// With options
+await user.sendMessage("reply here", { reply_to: msg });
+await user.sendMessage(format`${italic("important")}`, { reply_to: msg });
 ```
 
-#### `user.sendMessage(chat, text)` — send a message to a group
+```ts
+interface MessageOptions {
+    entities?: TelegramMessageEntity[]; // extra entities to merge
+    reply_to?: MessageObject;           // sets reply_to_message
+}
+```
+
+#### `user.sendMessage(chat, text, options?)` — send a message to a group
 
 ```ts
 const group = env.createChat({ type: "group", title: "Test Group" });
-await user.sendMessage(group, "/start");
+await user.sendMessage(group, "Hello group");
+await user.sendMessage(group, format`${bold("Bold")} in group`);
+```
+
+#### `user.sendReply(message, text)` — reply to a message
+
+Shortcut that automatically sets `reply_to_message` and targets the same chat the original message was in.
+
+```ts
+const msg = await user.sendMessage("Hello");
+await user.sendReply(msg, "Nice to meet you!");
+await user.sendReply(msg, format`Thanks ${bold("a lot")}!`);
+```
+
+#### `user.sendCommand(command, args?)` — send a bot command
+
+Produces the correct text and `bot_command` entity. Equivalent to a user typing `/command args` in Telegram.
+
+```ts
+await user.sendCommand("start");          // text: "/start"
+await user.sendCommand("start", "ref42"); // text: "/start ref42"
+
+// To a group:
+await user.sendCommand(group, "help");
+```
+
+#### Media send methods
+
+All media methods auto-generate `file_id`/`file_unique_id` and required fields. They all accept an optional leading `ChatObject` to send to a specific chat.
+
+```ts
+// Photo
+await user.sendPhoto();
+await user.sendPhoto({ caption: "Look!", spoiler: true });
+await user.sendPhoto(group, { caption: format`${bold("Photo")} incoming` });
+
+// Video
+await user.sendVideo();
+await user.sendVideo({ caption: "Watch this", spoiler: false });
+
+// Document
+await user.sendDocument();
+await user.sendDocument({ caption: "file.pdf" });
+
+// Voice message
+await user.sendVoice();
+
+// Sticker (accepts Partial<TelegramSticker> overrides instead of MediaOptions)
+await user.sendSticker();
+await user.sendSticker({ emoji: "🔥", type: "custom_emoji" });
+
+// Location
+await user.sendLocation({ latitude: 48.8566, longitude: 2.3522 });
+
+// Contact
+await user.sendContact({ phone_number: "+1234567890", first_name: "Alice" });
+
+// Dice
+await user.sendDice();        // 🎲
+await user.sendDice("🎯");
+await user.sendDice(group, "🏀");
+```
+
+```ts
+interface MediaOptions {
+    caption?: string | FormattableString; // caption text (entities auto-extracted from FormattableString)
+    spoiler?: boolean;                    // sets has_media_spoiler = true
+}
 ```
 
 #### `user.join(chat)` / `user.leave(chat)` — join or leave a group
@@ -95,6 +191,17 @@ Returns a `UserInChatScope` with the chat pre-bound. All methods on the scope de
 const group = env.createChat({ type: "group" });
 
 await user.in(group).sendMessage("Hello");
+await user.in(group).sendMessage(format`${bold("Hello")} group`);
+await user.in(group).sendCommand("help");
+await user.in(group).sendReply(originalMsg, "Thanks!");
+await user.in(group).sendPhoto({ caption: "Look at this" });
+await user.in(group).sendVideo();
+await user.in(group).sendDocument();
+await user.in(group).sendVoice();
+await user.in(group).sendSticker();
+await user.in(group).sendLocation({ latitude: 51.5, longitude: -0.1 });
+await user.in(group).sendContact({ phone_number: "+1" });
+await user.in(group).sendDice("🎯");
 await user.in(group).sendInlineQuery("cats");          // chat_type: "group"
 await user.in(group).sendInlineQuery("cats", { offset: "10" });
 await user.in(group).join();
@@ -225,13 +332,84 @@ Wraps `TelegramChat` with in-memory state tracking:
 
 ### `MessageObject`
 
-Wraps `TelegramMessage` with builder methods:
+Wraps `TelegramMessage` with a fluent builder API. Useful for constructing exotic messages that the `user.send*` shortcuts don't cover, then emitting them via `env.emitUpdate()`.
 
 ```ts
+import { format, bold, link } from "gramio";
+import { MessageObject } from "@gramio/test";
+
+// Basic
 const message = new MessageObject({ text: "Hello" })
     .from(user)
     .chat(group);
+
+// Formatted text — entities extracted from FormattableString
+new MessageObject()
+    .from(user)
+    .text(format`Check out ${link("https://gramio.dev", "GramIO")}`)
+    .replyTo(originalMsg);
+
+// Photo with spoiler
+new MessageObject()
+    .from(user)
+    .photo()                     // auto-generates file_id and two sizes
+    .caption(format`${bold("Spoiler!")}`)
+    .spoiler();
+
+// Rich message
+new MessageObject()
+    .from(user).chat(group)
+    .text("media group item")
+    .photo()
+    .mediaGroupId("group-1")
+    .topicMessage()
+    .protect();
 ```
+
+**Content methods:**
+
+| Method | Description |
+|--------|-------------|
+| `.from(user)` | Set `from` field; auto-creates private chat if no chat set |
+| `.chat(chat)` | Set `chat` field |
+| `.text(str \| FormattableString)` | Set message text (entities auto-extracted from FormattableString) |
+| `.caption(str \| FormattableString)` | Set caption (entities auto-extracted) |
+| `.entities(...entities)` | Append text entities |
+| `.captionEntities(...entities)` | Append caption entities |
+
+**Attachment methods** (all auto-generate `file_id`/`file_unique_id`):
+
+| Method | Description |
+|--------|-------------|
+| `.photo(overrides?)` | Attach photo (default: two sizes 100×100 and 800×600) |
+| `.video(overrides?)` | Attach video (1280×720, 10s) |
+| `.document(overrides?)` | Attach document |
+| `.audio(overrides?)` | Attach audio (30s) |
+| `.sticker(overrides?)` | Attach sticker (512×512, type "regular") |
+| `.voice(overrides?)` | Attach voice (5s) |
+| `.videoNote(overrides?)` | Attach video note (240px, 10s) |
+| `.animation(overrides?)` | Attach animation (480×270, 3s) |
+| `.contact(partial)` | Attach contact |
+| `.location(partial)` | Attach location |
+| `.dice(overrides?)` | Attach dice (🎲, random value) |
+| `.venue(partial)` | Attach venue |
+| `.game(partial)` | Attach game |
+| `.story(partial)` | Attach story |
+| `.poll(partial)` | Attach poll |
+
+**Structure methods:**
+
+| Method | Description |
+|--------|-------------|
+| `.replyTo(message)` | Set `reply_to_message` |
+| `.spoiler()` | `has_media_spoiler = true` |
+| `.protect()` | `has_protected_content = true` |
+| `.topicMessage()` | `is_topic_message = true` |
+| `.mediaGroupId(id)` | Set `media_group_id` |
+| `.effectId(id)` | Set `effect_id` |
+| `.viaBot(user)` | Set `via_bot` |
+| `.quote(text, entities?)` | Set reply quote (accepts FormattableString) |
+| `.linkPreviewOptions(options)` | Set `link_preview_options` |
 
 ### `CallbackQueryObject`
 
