@@ -1,6 +1,6 @@
 {
 	"name": "@gramio/test",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Event-driven test framework for GramIO Telegram bots",
 	"keywords": ["gramio", "telegram", "test", "testing", "bot", "framework"],
 	"homepage": "https://gramio.dev/testing",
