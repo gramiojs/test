@@ -63,6 +63,8 @@ const env = new TelegramTestEnvironment(bot);
 - **`env.onApi(method, handler)`** — override the response for a specific API method (see [Mocking API Responses](#mocking-api-responses))
 - **`env.offApi(method?)`** — remove a custom handler (or all handlers if no method given)
 - **`env.apiCalls`** — array of `{ method, params, response }` recording every API call the bot made
+- **`env.clearApiCalls()`** — empties the `apiCalls` array (useful between logical test phases)
+- **`env.lastApiCall(method)`** — returns the most recent recorded call for `method`, or `undefined` if none
 - **`env.users`** / **`env.chats`** — all created users and chats
 
 ### `UserObject` — the primary actor
@@ -148,6 +150,17 @@ await user.sendDocument({ caption: "file.pdf" });
 // Voice message
 await user.sendVoice();
 
+// Audio file
+await user.sendAudio();
+await user.sendAudio({ caption: "My track" });
+
+// Animation (GIF)
+await user.sendAnimation();
+await user.sendAnimation(group, { caption: "Funny gif" });
+
+// Video note (circle video)
+await user.sendVideoNote();
+
 // Sticker (accepts Partial<TelegramSticker> overrides instead of MediaOptions)
 await user.sendSticker();
 await user.sendSticker({ emoji: "🔥", type: "custom_emoji" });
@@ -198,6 +211,9 @@ await user.in(group).sendPhoto({ caption: "Look at this" });
 await user.in(group).sendVideo();
 await user.in(group).sendDocument();
 await user.in(group).sendVoice();
+await user.in(group).sendAudio();
+await user.in(group).sendAnimation();
+await user.in(group).sendVideoNote();
 await user.in(group).sendSticker();
 await user.in(group).sendLocation({ latitude: 51.5, longitude: -0.1 });
 await user.in(group).sendContact({ phone_number: "+1" });
@@ -225,6 +241,66 @@ const msg = await user.sendMessage("Nice bot!");
 await user.on(msg).react("👍");
 await user.on(msg).react("❤", { oldReactions: ["👍"] });
 await user.on(msg).click("action:1");
+```
+
+#### `user.on(msg).clickByText(buttonText)` — click an inline button by its label
+
+Scans the message's `inline_keyboard` for a button whose `text` matches, then emits a `callback_query` for its `callback_data`. Throws if no inline keyboard is present or no button matches.
+
+```ts
+msg.payload.reply_markup = {
+    inline_keyboard: [
+        [{ text: "Option A", callback_data: "opt:a" }],
+        [{ text: "Option B", callback_data: "opt:b" }],
+    ],
+};
+
+await user.on(msg).clickByText("Option B"); // emits callback_query with data "opt:b"
+```
+
+#### `user.editMessage(message, text)` — edit a message
+
+Updates the message's text in-memory and emits an `edited_message` update. Works with `bot.on("edited_message", ...)` handlers. GramIO exposes the edit timestamp as `ctx.updatedAt`.
+
+```ts
+const msg = await user.sendMessage("Original text");
+await user.editMessage(msg, "Updated text");
+
+// With FormattableString
+await user.editMessage(msg, format`${bold("Bold")} new text`);
+```
+
+#### `user.forwardMessage(message, toChat?)` — forward a message
+
+Emits a `message` update with `forward_origin` set. If `toChat` is omitted the message is forwarded to the user's private chat.
+
+```ts
+const original = await user.sendMessage(group, "Forward me!");
+await user.forwardMessage(original);            // forward to own PM
+await user.forwardMessage(original, otherGroup); // forward to another chat
+```
+
+#### `user.sendMediaGroup(chat, payloads[])` — send multiple media as an album
+
+Emits one `message` update per item, all sharing the same `media_group_id`. Returns an array of `MessageObject`.
+
+```ts
+const [msg1, msg2] = await user.sendMediaGroup(group, [
+    { photo: [{ file_id: "f1", file_unique_id: "u1", width: 800, height: 600 }] },
+    { photo: [{ file_id: "f2", file_unique_id: "u2", width: 800, height: 600 }] },
+]);
+
+expect(msg1.payload.media_group_id).toBe(msg2.payload.media_group_id);
+```
+
+#### `user.pinMessage(message, inChat?)` — pin a message
+
+Emits a service `message` update with `pinned_message` set. GramIO routes these to the `"pinned_message"` event (not `"message"`), so listen with `bot.on("pinned_message", ...)`.
+
+```ts
+const msg = await user.sendMessage("Important announcement");
+await user.pinMessage(msg);        // pinned in msg's own chat
+await user.pinMessage(msg, group); // pinned notification sent to a specific chat
 ```
 
 #### `user.click(callbackData, message?)` — click an inline button
@@ -329,6 +405,17 @@ Wraps `TelegramChat` with in-memory state tracking:
 
 - **`chat.members`** — `Set<UserObject>` of current members
 - **`chat.messages`** — `MessageObject[]` history of all messages in the chat
+
+#### `chat.post(text)` — anonymous channel post
+
+Emits a `channel_post` update with no `from` field — matching real Telegram channel behavior. Use this to test `bot.on("channel_post", ...)` handlers.
+
+```ts
+const channel = env.createChat({ type: "channel", title: "My Channel" });
+
+await channel.post("Breaking news!");
+await channel.post(format`Check out ${bold("this")}`);
+```
 
 ### `MessageObject`
 
@@ -483,6 +570,19 @@ await user.sendMessage("Hello");
 expect(env.apiCalls).toHaveLength(1);
 expect(env.apiCalls[0].method).toBe("sendMessage");
 expect(env.apiCalls[0].params.text).toBe("Reply!");
+```
+
+Use `env.clearApiCalls()` to reset between logical phases of a test, and `env.lastApiCall(method)` to find the most recent call for a method without scanning the whole array:
+
+```ts
+await user.sendMessage("First");
+await user.sendMessage("Second");
+
+const last = env.lastApiCall("sendMessage");
+expect(last?.params.text).toBe("Reply!"); // bot's response to "Second"
+
+env.clearApiCalls();
+expect(env.apiCalls).toHaveLength(0);
 ```
 
 ## Mocking API Responses

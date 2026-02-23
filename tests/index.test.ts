@@ -1057,3 +1057,644 @@ describe("onApi / offApi", () => {
 		expect(call?.response).toBeInstanceOf(TelegramError);
 	});
 });
+
+describe("New media send methods", () => {
+	it("sendAudio() emits message update with audio attachment", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message"> | undefined;
+		bot.on("message", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser({ first_name: "Alice" });
+
+		const msg = await user.sendAudio();
+
+		expect(received).toBeDefined();
+		expect(received?.audio).toBeDefined();
+		expect(msg.payload.audio).toBeDefined();
+		expect(msg.payload.audio?.duration).toBe(30);
+	});
+
+	it("sendAudio() to a group chat routes to that chat", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message"> | undefined;
+		bot.on("message", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const group = env.createChat({ type: "group", title: "Music Room" });
+
+		await user.sendAudio(group);
+
+		expect(received?.chat?.id).toBe(group.payload.id);
+		expect(received?.audio).toBeDefined();
+	});
+
+	it("sendAnimation() emits message update with animation attachment", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message"> | undefined;
+		bot.on("message", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		const msg = await user.sendAnimation();
+
+		expect(received).toBeDefined();
+		expect(received?.animation).toBeDefined();
+		expect(msg.payload.animation?.width).toBe(480);
+		expect(msg.payload.animation?.height).toBe(270);
+		expect(msg.payload.animation?.duration).toBe(3);
+	});
+
+	it("sendAnimation() accepts a caption via MediaOptions", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message"> | undefined;
+		bot.on("message", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		await user.sendAnimation({ caption: "Cool GIF" });
+
+		expect(received?.caption).toBe("Cool GIF");
+		expect(received?.animation).toBeDefined();
+	});
+
+	it("sendVideoNote() emits message update with video_note attachment", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message"> | undefined;
+		bot.on("message", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		const msg = await user.sendVideoNote();
+
+		expect(received).toBeDefined();
+		expect(received?.videoNote).toBeDefined();
+		expect(msg.payload.video_note?.length).toBe(240);
+		expect(msg.payload.video_note?.duration).toBe(10);
+	});
+
+	it("sendVideoNote() to a group chat routes to that chat", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message"> | undefined;
+		bot.on("message", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const group = env.createChat({ type: "group", title: "Video Notes" });
+
+		await user.sendVideoNote(group);
+
+		expect(received?.chat?.id).toBe(group.payload.id);
+		expect(received?.videoNote).toBeDefined();
+	});
+});
+
+describe("user.editMessage()", () => {
+	it("mutates msg.payload.text and emits edited_message", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "edited_message"> | undefined;
+		bot.on("edited_message", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const msg = await user.sendMessage("Original text");
+
+		await user.editMessage(msg, "Edited text");
+
+		expect(msg.payload.text).toBe("Edited text");
+		expect(received).toBeDefined();
+		expect(received?.text).toBe("Edited text");
+	});
+
+	it("sets edit_date on the message payload", async () => {
+		const bot = new Bot("test");
+		bot.on("edited_message", () => {});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const msg = await user.sendMessage("Hello");
+
+		const before = Math.floor(Date.now() / 1000);
+		await user.editMessage(msg, "Updated");
+		const after = Math.floor(Date.now() / 1000);
+
+		expect(msg.payload.edit_date).toBeGreaterThanOrEqual(before);
+		expect(msg.payload.edit_date).toBeLessThanOrEqual(after);
+	});
+
+	it("returns the same MessageObject (mutated in place)", async () => {
+		const bot = new Bot("test");
+		bot.on("edited_message", () => {});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const msg = await user.sendMessage("First version");
+
+		const result = await user.editMessage(msg, "Second version");
+
+		expect(result).toBe(msg);
+	});
+
+	it("emits edited_message with updatedAt accessible from context", async () => {
+		const bot = new Bot("test");
+		let updatedAtInCtx: number | undefined;
+		bot.on("edited_message", (ctx) => {
+			updatedAtInCtx = ctx.updatedAt;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const msg = await user.sendMessage("Original");
+
+		await user.editMessage(msg, "New text");
+
+		expect(updatedAtInCtx).toBeDefined();
+		expect(typeof updatedAtInCtx).toBe("number");
+	});
+});
+
+describe("user.forwardMessage()", () => {
+	it("emits a new message update with forward_origin set", async () => {
+		const bot = new Bot("test");
+		const messages: ContextType<Bot, "message">[] = [];
+		bot.on("message", (ctx) => {
+			messages.push(ctx);
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const alice = env.createUser({ first_name: "Alice" });
+		const bob = env.createUser({ first_name: "Bob" });
+		const original = await alice.sendMessage("Hello from Alice");
+
+		await bob.forwardMessage(original);
+
+		const forwarded = messages[messages.length - 1];
+		expect(forwarded.forwardOrigin).toBeDefined();
+		expect(forwarded.text).toBe("Hello from Alice");
+	});
+
+	it("forward_origin.sender_user matches original sender", async () => {
+		const bot = new Bot("test");
+		const messages: ContextType<Bot, "message">[] = [];
+		bot.on("message", (ctx) => {
+			messages.push(ctx);
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const alice = env.createUser({ first_name: "Alice" });
+		const bob = env.createUser({ first_name: "Bob" });
+		const original = await alice.sendMessage("Forward me");
+
+		await bob.forwardMessage(original);
+
+		const forwarded = messages[messages.length - 1];
+		const origin = forwarded.payload.forward_origin as {
+			type: string;
+			sender_user: { id: number };
+		};
+		expect(origin.type).toBe("user");
+		expect(origin.sender_user.id).toBe(alice.payload.id);
+	});
+
+	it("forwards to toChat when provided", async () => {
+		const bot = new Bot("test");
+		const messages: ContextType<Bot, "message">[] = [];
+		bot.on("message", (ctx) => {
+			messages.push(ctx);
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const alice = env.createUser({ first_name: "Alice" });
+		const group = env.createChat({ type: "group", title: "Fwd Group" });
+		const original = await alice.sendMessage("For forwarding");
+
+		await alice.forwardMessage(original, group);
+
+		const forwarded = messages[messages.length - 1];
+		expect(forwarded.chat?.id).toBe(group.payload.id);
+	});
+
+	it("defaults to forwarder's PM chat when toChat is omitted", async () => {
+		const bot = new Bot("test");
+		const messages: ContextType<Bot, "message">[] = [];
+		bot.on("message", (ctx) => {
+			messages.push(ctx);
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const alice = env.createUser({ first_name: "Alice" });
+		const bob = env.createUser({ first_name: "Bob" });
+		const original = await alice.sendMessage("Hello");
+
+		await bob.forwardMessage(original);
+
+		const forwarded = messages[messages.length - 1];
+		expect(forwarded.chat?.id).toBe(bob.asChat.payload.id);
+		expect(forwarded.chat?.type).toBe("private");
+	});
+});
+
+describe("user.sendMediaGroup()", () => {
+	it("emits one message update per item and returns all MessageObjects", async () => {
+		const bot = new Bot("test");
+		const updates: ContextType<Bot, "message">[] = [];
+		bot.on("message", (ctx) => {
+			updates.push(ctx);
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		const results = await user.sendMediaGroup([
+			{
+				photo: [
+					{ file_id: "f1", file_unique_id: "u1", width: 100, height: 100 },
+				],
+			},
+			{
+				photo: [
+					{ file_id: "f2", file_unique_id: "u2", width: 100, height: 100 },
+				],
+			},
+			{
+				photo: [
+					{ file_id: "f3", file_unique_id: "u3", width: 100, height: 100 },
+				],
+			},
+		]);
+
+		expect(results).toHaveLength(3);
+		expect(updates).toHaveLength(3);
+	});
+
+	it("all messages in the group share the same media_group_id", async () => {
+		const env = new TelegramTestEnvironment(new Bot("test"));
+		const user = env.createUser();
+
+		const results = await user.sendMediaGroup([
+			{
+				photo: [
+					{ file_id: "f1", file_unique_id: "u1", width: 100, height: 100 },
+				],
+			},
+			{
+				photo: [
+					{ file_id: "f2", file_unique_id: "u2", width: 100, height: 100 },
+				],
+			},
+		]);
+
+		expect(results[0].payload.media_group_id).toBeDefined();
+		expect(results[0].payload.media_group_id).toBe(
+			results[1].payload.media_group_id,
+		);
+	});
+
+	it("sendMediaGroup() with a leading ChatObject routes all items to that chat", async () => {
+		const env = new TelegramTestEnvironment(new Bot("test"));
+		const user = env.createUser();
+		const group = env.createChat({ type: "group", title: "Album Group" });
+
+		const results = await user.sendMediaGroup(group, [
+			{
+				photo: [
+					{ file_id: "f1", file_unique_id: "u1", width: 100, height: 100 },
+				],
+			},
+			{
+				photo: [
+					{ file_id: "f2", file_unique_id: "u2", width: 100, height: 100 },
+				],
+			},
+		]);
+
+		for (const msg of results) {
+			expect(msg.payload.chat?.id).toBe(group.payload.id);
+		}
+	});
+});
+
+describe("user.pinMessage()", () => {
+	it("emits a message update with pinned_message set", async () => {
+		const bot = new Bot("test");
+		const messages: ContextType<Bot, "pinned_message">[] = [];
+		// GramIO routes pinned_message service messages to "pinned_message" event
+		bot.on("pinned_message", (ctx) => {
+			messages.push(ctx);
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const original = await user.sendMessage("Pin me!");
+
+		await user.pinMessage(original);
+
+		const pinMsg = messages[messages.length - 1];
+		expect(pinMsg.pinnedMessage).toBeDefined();
+		// @ts-expect-error inaccessible type
+		expect(pinMsg.pinnedMessage?.text).toBe("Pin me!");
+	});
+
+	it("pins in the specified inChat when provided", async () => {
+		const bot = new Bot("test");
+		const messages: ContextType<Bot, "pinned_message">[] = [];
+		bot.on("pinned_message", (ctx) => {
+			messages.push(ctx);
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const group = env.createChat({ type: "group", title: "Pin Group" });
+		const original = await user.sendMessage("Hello");
+
+		await user.pinMessage(original, group);
+
+		const pinMsg = messages[messages.length - 1];
+		expect(pinMsg.chat?.id).toBe(group.payload.id);
+		expect(pinMsg.pinnedMessage).toBeDefined();
+	});
+
+	it("defaults to message._chat when inChat is omitted", async () => {
+		const bot = new Bot("test");
+		const messages: ContextType<Bot, "pinned_message">[] = [];
+		bot.on("pinned_message", (ctx) => {
+			messages.push(ctx);
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const group = env.createChat({ type: "group", title: "Chat" });
+		const original = await user.sendMessage(group, "Original");
+
+		await user.pinMessage(original);
+
+		const pinMsg = messages[messages.length - 1];
+		expect(pinMsg.chat?.id).toBe(group.payload.id);
+	});
+});
+
+describe("user.on(msg).clickByText()", () => {
+	it("finds an inline button by text and emits callback_query", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "callback_query"> | undefined;
+		bot.on("callback_query", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const msg = await user.sendMessage("Choose:");
+
+		msg.payload.reply_markup = {
+			inline_keyboard: [
+				[{ text: "Option A", callback_data: "opt:a" }],
+				[{ text: "Option B", callback_data: "opt:b" }],
+			],
+		};
+
+		await user.on(msg).clickByText("Option B");
+
+		expect(received).toBeDefined();
+		expect(received?.data).toBe("opt:b");
+	});
+
+	it("finds the correct button in a multi-button row", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "callback_query"> | undefined;
+		bot.on("callback_query", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const msg = await user.sendMessage("Multi-button row:");
+
+		msg.payload.reply_markup = {
+			inline_keyboard: [
+				[
+					{ text: "Yes", callback_data: "answer:yes" },
+					{ text: "No", callback_data: "answer:no" },
+					{ text: "Maybe", callback_data: "answer:maybe" },
+				],
+			],
+		};
+
+		await user.on(msg).clickByText("No");
+
+		expect(received?.data).toBe("answer:no");
+	});
+
+	it("throws when the message has no inline keyboard", () => {
+		const env = new TelegramTestEnvironment(new Bot("test"));
+		const user = env.createUser();
+		const msg = new MessageObject().from(user).text("No buttons");
+
+		expect(() => user.on(msg).clickByText("Anything")).toThrow(
+			"Message has no inline keyboard",
+		);
+	});
+
+	it("throws when no button matches the given text", () => {
+		const env = new TelegramTestEnvironment(new Bot("test"));
+		const user = env.createUser();
+		const msg = new MessageObject().from(user).text("Pick:");
+
+		msg.payload.reply_markup = {
+			inline_keyboard: [[{ text: "Existing", callback_data: "data:1" }]],
+		};
+
+		expect(() => user.on(msg).clickByText("Missing")).toThrow(
+			'No inline button with text "Missing" found',
+		);
+	});
+});
+
+describe("ChatObject.post()", () => {
+	it("emits a channel_post update", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "channel_post"> | undefined;
+		bot.on("channel_post", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const channel = env.createChat({ type: "channel", title: "My Channel" });
+
+		await channel.post("Hello from channel");
+
+		expect(received).toBeDefined();
+		expect(received?.text).toBe("Hello from channel");
+	});
+
+	it("channel_post has no from field (anonymous channel post)", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "channel_post"> | undefined;
+		bot.on("channel_post", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const channel = env.createChat({ type: "channel", title: "Anon Channel" });
+
+		await channel.post("Anonymous post");
+
+		expect(received?.from).toBeUndefined();
+	});
+
+	it("tracks posted messages in chat.messages", async () => {
+		const bot = new Bot("test");
+		bot.on("channel_post", () => {});
+
+		const env = new TelegramTestEnvironment(bot);
+		const channel = env.createChat({ type: "channel", title: "News" });
+
+		await channel.post("First post");
+		await channel.post("Second post");
+
+		expect(channel.messages).toHaveLength(2);
+		expect(channel.messages[0].payload.text).toBe("First post");
+		expect(channel.messages[1].payload.text).toBe("Second post");
+	});
+
+	it("throws when ChatObject is not attached to an environment", async () => {
+		const channel = new ChatObject({ type: "channel", title: "Detached" });
+
+		expect(channel.post("Will fail")).rejects.toThrow(
+			"ChatObject is not attached to a TelegramTestEnvironment",
+		);
+	});
+});
+
+describe("env.clearApiCalls() / env.lastApiCall()", () => {
+	it("clearApiCalls() empties the apiCalls array", async () => {
+		const bot = new Bot("test");
+		bot.on("message", async (ctx) => {
+			await ctx.send("Reply");
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		await user.sendMessage("Hello");
+		expect(env.apiCalls.length).toBeGreaterThan(0);
+
+		env.clearApiCalls();
+
+		expect(env.apiCalls).toHaveLength(0);
+	});
+
+	it("clearApiCalls() allows fresh recording after clearing", async () => {
+		const bot = new Bot("test");
+		bot.on("message", async (ctx) => {
+			await ctx.send("Hi");
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		await user.sendMessage("First");
+		env.clearApiCalls();
+		await user.sendMessage("Second");
+
+		expect(env.apiCalls.length).toBeGreaterThan(0);
+		const textParams = env.apiCalls.map(
+			(c) => (c.params as { text?: string }).text,
+		);
+		expect(textParams).not.toContain("First");
+	});
+
+	it("lastApiCall() returns the most recent call for a method", async () => {
+		const bot = new Bot("test");
+		bot.on("message", async (ctx) => {
+			await ctx.send("First reply");
+			await ctx.send("Second reply");
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		await user.sendMessage("Trigger");
+
+		const last = env.lastApiCall("sendMessage");
+		expect(last).toBeDefined();
+		expect((last?.params as { text?: string }).text).toBe("Second reply");
+	});
+
+	it("lastApiCall() returns undefined when no call for method was recorded", () => {
+		const env = new TelegramTestEnvironment(new Bot("test"));
+
+		expect(env.lastApiCall("deleteMessage")).toBeUndefined();
+	});
+});
+
+describe("UserInChatScope — new media methods", () => {
+	it("user.in(chat).sendAudio() routes to the scoped chat", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message"> | undefined;
+		bot.on("message", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const group = env.createChat({ type: "group", title: "Audio Room" });
+
+		await user.in(group).sendAudio();
+
+		expect(received?.chat?.id).toBe(group.payload.id);
+		expect(received?.audio).toBeDefined();
+	});
+
+	it("user.in(chat).sendAnimation() routes to the scoped chat and supports MediaOptions", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message"> | undefined;
+		bot.on("message", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const group = env.createChat({ type: "group", title: "GIF Room" });
+
+		await user.in(group).sendAnimation({ caption: "Animated!" });
+
+		expect(received?.chat?.id).toBe(group.payload.id);
+		expect(received?.animation).toBeDefined();
+		expect(received?.caption).toBe("Animated!");
+	});
+
+	it("user.in(chat).sendVideoNote() routes to the scoped chat", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message"> | undefined;
+		bot.on("message", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const group = env.createChat({ type: "group", title: "Circle Videos" });
+
+		await user.in(group).sendVideoNote();
+
+		expect(received?.chat?.id).toBe(group.payload.id);
+		expect(received?.videoNote).toBeDefined();
+	});
+});

@@ -385,6 +385,164 @@ export class UserObject {
 		});
 	}
 
+	/** Send an audio file. File fields are auto-generated. */
+	async sendAudio(
+		chatOrOptions?: ChatObject | MediaOptions,
+		options?: MediaOptions,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+
+		const [chat, opts] =
+			chatOrOptions instanceof ChatObject
+				? [chatOrOptions, options]
+				: [this.asChat, chatOrOptions];
+
+		const payload: Partial<TelegramMessage> = {
+			audio: { ...genFile(), duration: 30 },
+		};
+		applyMediaOptions(payload, opts);
+		return this._emitMessage(chat, payload);
+	}
+
+	/** Send an animation (GIF). File fields are auto-generated. */
+	async sendAnimation(
+		chatOrOptions?: ChatObject | MediaOptions,
+		options?: MediaOptions,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+
+		const [chat, opts] =
+			chatOrOptions instanceof ChatObject
+				? [chatOrOptions, options]
+				: [this.asChat, chatOrOptions];
+
+		const payload: Partial<TelegramMessage> = {
+			animation: { ...genFile(), width: 480, height: 270, duration: 3 },
+		};
+		applyMediaOptions(payload, opts);
+		return this._emitMessage(chat, payload);
+	}
+
+	/** Send a video note (circle video). File fields are auto-generated. */
+	async sendVideoNote(
+		chatOrOptions?: ChatObject | MediaOptions,
+		options?: MediaOptions,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+
+		const [chat, opts] =
+			chatOrOptions instanceof ChatObject
+				? [chatOrOptions, options]
+				: [this.asChat, chatOrOptions];
+
+		const payload: Partial<TelegramMessage> = {
+			video_note: { ...genFile(), length: 240, duration: 10 },
+		};
+		applyMediaOptions(payload, opts);
+		return this._emitMessage(chat, payload);
+	}
+
+	/** Edit the text of an existing message. Updates the message in-place and emits `edited_message`. */
+	async editMessage(
+		message: MessageObject,
+		text: string | FormattableString,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+
+		const resolved = resolveText(text);
+		message.payload.text = resolved.text;
+		if (resolved.entities) {
+			message.payload.entities = resolved.entities;
+		} else {
+			delete message.payload.entities;
+		}
+		message.payload.edit_date = Math.floor(Date.now() / 1000);
+
+		await this.environment!.emitUpdate({
+			update_id: 0,
+			edited_message: message.payload as TelegramMessage & {
+				chat: NonNullable<TelegramMessage["chat"]>;
+			},
+		});
+
+		return message;
+	}
+
+	/**
+	 * Forward a message to a chat (defaults to this user's PM chat).
+	 * The forwarded message gets `forward_origin` set to the original sender.
+	 */
+	async forwardMessage(
+		message: MessageObject,
+		toChat?: ChatObject,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+
+		const chat = toChat ?? this.asChat;
+		const { message_id: _mid, date, chat: _c, from, edit_date: _ed, forward_origin: _fo, reply_to_message: _rtm, ...content } =
+			message.payload as TelegramMessage;
+
+		return this._emitMessage(chat, {
+			...content,
+			forward_origin: {
+				type: "user" as const,
+				date,
+				sender_user: from ?? this.payload,
+			},
+		});
+	}
+
+	/**
+	 * Send a media group (album): multiple messages sharing the same `media_group_id`.
+	 * Each element in `payloads` becomes its own `message` update.
+	 */
+	async sendMediaGroup(
+		chatOrPayloads: ChatObject | Partial<TelegramMessage>[],
+		payloads?: Partial<TelegramMessage>[],
+	): Promise<MessageObject[]> {
+		this._checkEnvironment();
+
+		let chat: ChatObject;
+		let msgs: Partial<TelegramMessage>[];
+
+		if (chatOrPayloads instanceof ChatObject) {
+			chat = chatOrPayloads;
+			msgs = payloads ?? [];
+		} else {
+			chat = this.asChat;
+			msgs = chatOrPayloads;
+		}
+
+		const groupId = String(Date.now());
+		const results: MessageObject[] = [];
+
+		for (const payload of msgs) {
+			const msg = await this._emitMessage(chat, {
+				...payload,
+				media_group_id: groupId,
+			});
+			results.push(msg);
+		}
+
+		return results;
+	}
+
+	/**
+	 * Pin a message in a chat (emits a service message with `pinned_message`).
+	 * Uses the message's own chat, or `inChat` if provided.
+	 */
+	async pinMessage(
+		message: MessageObject,
+		inChat?: ChatObject,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+
+		const chat = inChat ?? message._chat ?? this.asChat;
+		return this._emitMessage(chat, {
+			pinned_message: message.payload as TelegramMessage,
+		});
+	}
+
 	async join(chat: ChatObject): Promise<void> {
 		if (!this.environment) {
 			throw new Error(

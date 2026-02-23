@@ -19,9 +19,28 @@ export class UserOnMessageScope {
 		return this.user.react(reactOrEmojis as TelegramReactionTypeEmojiEmoji, this.message);
 	}
 
-	/** Click an inline button on the scoped message. */
+	/** Click an inline button on the scoped message by its callback data. */
 	click(callbackData: string) {
 		return this.user.click(callbackData, this.message);
+	}
+
+	/**
+	 * Find an inline button by its visible text and click it.
+	 * Throws if the message has no inline keyboard or no matching button.
+	 */
+	clickByText(buttonText: string) {
+		const markup = this.message.payload.reply_markup;
+		if (!markup || !("inline_keyboard" in markup)) {
+			throw new Error("Message has no inline keyboard");
+		}
+		for (const row of markup.inline_keyboard) {
+			for (const btn of row) {
+				if (btn.text === buttonText && btn.callback_data !== undefined) {
+					return this.user.click(btn.callback_data, this.message);
+				}
+			}
+		}
+		throw new Error(`No inline button with text "${buttonText}" found`);
 	}
 }
 
@@ -64,6 +83,21 @@ export class UserInChatScope {
 	/** Send a voice message to the scoped chat. */
 	sendVoice(options?: MediaOptions) {
 		return this.user.sendVoice(this.chat, options);
+	}
+
+	/** Send an audio file to the scoped chat. */
+	sendAudio(options?: MediaOptions) {
+		return this.user.sendAudio(this.chat, options);
+	}
+
+	/** Send an animation (GIF) to the scoped chat. */
+	sendAnimation(options?: MediaOptions) {
+		return this.user.sendAnimation(this.chat, options);
+	}
+
+	/** Send a video note (circle video) to the scoped chat. */
+	sendVideoNote(options?: MediaOptions) {
+		return this.user.sendVideoNote(this.chat, options);
 	}
 
 	/** Send a sticker to the scoped chat. */

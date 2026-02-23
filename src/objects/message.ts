@@ -23,11 +23,11 @@ import type {
 } from "gramio";
 import { FormattableString } from "gramio";
 import type { Optional } from "../utils.ts";
-import { genFile } from "../utils.ts";
+import { genFile, lastMessageIdPerChat } from "../utils.ts";
 import { ChatObject } from "./chat.ts";
 import { UserObject } from "./user.ts";
 
-export const lastMessageIdPerChat = new Map<number, number>();
+export { lastMessageIdPerChat };
 
 export class MessageObject {
 	public type = "message";

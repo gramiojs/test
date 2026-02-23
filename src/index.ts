@@ -166,6 +166,21 @@ export class TelegramTestEnvironment {
 		}
 	}
 
+	/** Clear all recorded API calls. */
+	clearApiCalls() {
+		this.apiCalls = [];
+	}
+
+	/** Return the last recorded API call for `method`, or `undefined` if none. */
+	lastApiCall<Method extends keyof APIMethods>(
+		method: Method,
+	): ApiCall | undefined {
+		for (let i = this.apiCalls.length - 1; i >= 0; i--) {
+			if (this.apiCalls[i].method === method) return this.apiCalls[i];
+		}
+		return undefined;
+	}
+
 	emitUpdate(update: TelegramUpdate | MessageObject) {
 		if (update instanceof MessageObject) {
 			return this.bot.updates.handleUpdate({
@@ -194,6 +209,7 @@ export class TelegramTestEnvironment {
 
 	createChat(payload: Partial<TelegramChat> = {}) {
 		const chat = new ChatObject(payload);
+		chat.environment = this;
 		this.chats.push(chat);
 		return chat;
 	}
