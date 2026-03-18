@@ -15,6 +15,7 @@ import type {
 	TelegramPoll,
 	TelegramSticker,
 	TelegramStory,
+	TelegramSuccessfulPayment,
 	TelegramUser,
 	TelegramVenue,
 	TelegramVideo,
@@ -277,6 +278,19 @@ export class MessageObject {
 			type: "regular",
 			allows_multiple_answers: false,
 			...poll,
+		};
+		return this;
+	}
+
+	/** Attach a successful payment. */
+	successfulPayment(overrides?: Partial<TelegramSuccessfulPayment>): this {
+		this.payload.successful_payment = {
+			currency: "XTR",
+			total_amount: 1,
+			invoice_payload: "default_payload",
+			telegram_payment_charge_id: `tg_charge_${Date.now()}`,
+			provider_payment_charge_id: `provider_charge_${Date.now()}`,
+			...overrides,
 		};
 		return this;
 	}

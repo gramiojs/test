@@ -4,8 +4,11 @@ import type {
 	TelegramLocation,
 	TelegramMessage,
 	TelegramMessageEntity,
+	TelegramPreCheckoutQuery,
 	TelegramReactionTypeEmojiEmoji,
+	TelegramShippingQuery,
 	TelegramSticker,
+	TelegramSuccessfulPayment,
 	TelegramUser,
 } from "@gramio/types";
 import { FormattableString } from "gramio";
@@ -15,6 +18,8 @@ import { CallbackQueryObject } from "./callback-query.ts";
 import { ChatObject } from "./chat.ts";
 import { ChosenInlineResultObject } from "./chosen-inline-result.ts";
 import { InlineQueryObject } from "./inline-query.ts";
+import { PreCheckoutQueryObject } from "./pre-checkout-query.ts";
+import { ShippingQueryObject } from "./shipping-query.ts";
 import { MessageObject, lastMessageIdPerChat } from "./message.ts";
 import { ReactObject } from "./react.ts";
 import { UserInChatScope, UserOnMessageScope } from "./user-scopes.ts";
@@ -764,6 +769,102 @@ export class UserObject {
 		});
 
 		return inlineQuery;
+	}
+
+	async sendPreCheckoutQuery(
+		overrides?: Partial<TelegramPreCheckoutQuery>,
+	): Promise<PreCheckoutQueryObject> {
+		this._checkEnvironment();
+		const query = new PreCheckoutQueryObject({
+			from: this.payload,
+			...overrides,
+		});
+		await this.environment!.emitUpdate({
+			update_id: 0,
+			pre_checkout_query: query.payload,
+		});
+		return query;
+	}
+
+	async sendShippingQuery(
+		overrides?: Partial<TelegramShippingQuery>,
+	): Promise<ShippingQueryObject> {
+		this._checkEnvironment();
+		const query = new ShippingQueryObject({
+			from: this.payload,
+			...overrides,
+		});
+		await this.environment!.emitUpdate({
+			update_id: 0,
+			shipping_query: query.payload,
+		});
+		return query;
+	}
+
+	async sendSuccessfulPayment(
+		chatOrOverrides?: ChatObject | Partial<TelegramSuccessfulPayment>,
+		overrides?: Partial<TelegramSuccessfulPayment>,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+
+		let chat: ChatObject;
+		let opts: Partial<TelegramSuccessfulPayment> | undefined;
+
+		if (chatOrOverrides instanceof ChatObject) {
+			chat = chatOrOverrides;
+			opts = overrides;
+		} else {
+			chat = this.asChat;
+			opts = chatOrOverrides;
+		}
+
+		const payment: TelegramSuccessfulPayment = {
+			currency: "XTR",
+			total_amount: 1,
+			invoice_payload: "default_payload",
+			telegram_payment_charge_id: `tg_charge_${Date.now()}`,
+			provider_payment_charge_id: `provider_charge_${Date.now()}`,
+			...opts,
+		};
+
+		// Telegram always sends pre_checkout_query before successful_payment
+		const preCheckout = new PreCheckoutQueryObject({
+			from: this.payload,
+			currency: payment.currency,
+			total_amount: payment.total_amount,
+			invoice_payload: payment.invoice_payload,
+			shipping_option_id: payment.shipping_option_id,
+			order_info: payment.order_info,
+		});
+
+		await this.environment!.emitUpdate({
+			update_id: 0,
+			pre_checkout_query: preCheckout.payload,
+		});
+
+		// Check that the bot approved the pre-checkout query
+		const answerCall = this.environment!.apiCalls
+			.filter(
+				(c) =>
+					c.method === "answerPreCheckoutQuery" &&
+					(c.params as { pre_checkout_query_id?: string })
+						.pre_checkout_query_id === preCheckout.payload.id,
+			)
+			.pop();
+
+		if (!answerCall) {
+			throw new Error(
+				"Bot did not call answerPreCheckoutQuery. Register a pre_checkout_query handler that calls ctx.answerPreCheckoutQuery({ ok: true }).",
+			);
+		}
+
+		if (!(answerCall.params as { ok?: boolean }).ok) {
+			throw new Error(
+				`Bot rejected pre_checkout_query (ok: false). Telegram would not send successful_payment. Error: ${(answerCall.params as { error_message?: string }).error_message ?? "none"}`,
+			);
+		}
+
+		return this._emitMessage(chat, { successful_payment: payment });
 	}
 
 	/** Scope this user to a chat, enabling fluent actions: `.sendMessage()`, `.sendInlineQuery()`, `.join()`, `.leave()`, `.on(msg)`. */

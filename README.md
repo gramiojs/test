@@ -483,6 +483,7 @@ new MessageObject()
 | `.game(partial)` | Attach game |
 | `.story(partial)` | Attach story |
 | `.poll(partial)` | Attach poll |
+| `.successfulPayment(overrides?)` | Attach successful payment |
 
 **Structure methods:**
 
@@ -497,6 +498,90 @@ new MessageObject()
 | `.viaBot(user)` | Set `via_bot` |
 | `.quote(text, entities?)` | Set reply quote (accepts FormattableString) |
 | `.linkPreviewOptions(options)` | Set `link_preview_options` |
+
+#### Payments
+
+Simulate Telegram Payments: pre-checkout queries, shipping queries, and successful payment service messages.
+
+**`user.sendPreCheckoutQuery(overrides?)`** — emit a `pre_checkout_query` update:
+
+```ts
+const bot = new Bot("test");
+bot.on("pre_checkout_query", async (ctx) => {
+    await ctx.answerPreCheckoutQuery({ ok: true });
+});
+
+const env = new TelegramTestEnvironment(bot);
+const user = env.createUser();
+
+await user.sendPreCheckoutQuery({
+    currency: "XTR",
+    total_amount: 100,
+    invoice_payload: "product_123",
+});
+
+const call = env.lastApiCall("answerPreCheckoutQuery");
+expect(call).toBeDefined();
+```
+
+**`user.sendShippingQuery(overrides?)`** — emit a `shipping_query` update:
+
+```ts
+await user.sendShippingQuery({
+    invoice_payload: "physical_item",
+});
+// Default shipping address is San Francisco, US
+```
+
+**`user.sendSuccessfulPayment(overrides?)`** — full payment flow: emits `pre_checkout_query` first, verifies the bot approved it, then emits `successful_payment`. This mirrors real Telegram behavior where a successful payment is only possible after the bot confirms the pre-checkout query.
+
+```ts
+bot.on("pre_checkout_query", async (ctx) => {
+    await ctx.answerPreCheckoutQuery({ ok: true });
+});
+bot.on("successful_payment", (ctx) => {
+    // ctx.successfulPayment.invoicePayload, ctx.successfulPayment.totalAmount, etc.
+});
+
+await user.sendSuccessfulPayment({
+    currency: "XTR",
+    total_amount: 100,
+    invoice_payload: "sub_monthly",
+});
+
+// Send to a specific chat:
+await user.sendSuccessfulPayment(group, { invoice_payload: "group_purchase" });
+
+// Scoped variant:
+await user.in(group).sendSuccessfulPayment({ invoice_payload: "scoped" });
+```
+
+Throws if the bot doesn't handle `pre_checkout_query` or rejects it with `ok: false` — just like Telegram would never send `successful_payment` in those cases.
+
+### `PreCheckoutQueryObject`
+
+Wraps `TelegramPreCheckoutQuery` with builder methods:
+
+```ts
+const query = new PreCheckoutQueryObject()
+    .from(user)
+    .currency("USD")
+    .totalAmount(500)
+    .invoicePayload("product_123")
+    .shippingOptionId("express")
+    .orderInfo({ name: "Alice" });
+```
+
+### `ShippingQueryObject`
+
+Wraps `TelegramShippingQuery` with builder methods:
+
+```ts
+const query = new ShippingQueryObject()
+    .from(user)
+    .invoicePayload("physical_item")
+    .shippingAddress({ country_code: "DE", city: "Berlin" });
+```
 
 ### `CallbackQueryObject`
 

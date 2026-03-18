@@ -6,7 +6,9 @@ import {
 	ChosenInlineResultObject,
 	InlineQueryObject,
 	MessageObject,
+	PreCheckoutQueryObject,
 	ReactObject,
+	ShippingQueryObject,
 	TelegramTestEnvironment,
 	UserObject,
 	apiError,
@@ -1696,5 +1698,227 @@ describe("UserInChatScope — new media methods", () => {
 
 		expect(received?.chat?.id).toBe(group.payload.id);
 		expect(received?.videoNote).toBeDefined();
+	});
+});
+
+describe("Payments", () => {
+	it("PreCheckoutQueryObject has correct defaults", () => {
+		const query = new PreCheckoutQueryObject();
+
+		expect(query.payload.id).toBeDefined();
+		expect(query.payload.currency).toBe("XTR");
+		expect(query.payload.total_amount).toBe(1);
+		expect(query.payload.invoice_payload).toBe("default_payload");
+	});
+
+	it("ShippingQueryObject has correct defaults", () => {
+		const query = new ShippingQueryObject();
+
+		expect(query.payload.id).toBeDefined();
+		expect(query.payload.invoice_payload).toBe("default_payload");
+		expect(query.payload.shipping_address.country_code).toBe("US");
+		expect(query.payload.shipping_address.city).toBe("San Francisco");
+	});
+
+	it("user.sendPreCheckoutQuery() emits pre_checkout_query event", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "pre_checkout_query"> | undefined;
+		bot.on("pre_checkout_query", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser({ first_name: "Buyer" });
+
+		await user.sendPreCheckoutQuery({
+			currency: "USD",
+			total_amount: 500,
+			invoice_payload: "product_123",
+		});
+
+		expect(received).toBeDefined();
+		expect(received?.from?.firstName).toBe("Buyer");
+		expect(received?.currency).toBe("USD");
+		expect(received?.totalAmount).toBe(500);
+		expect(received?.invoicePayload).toBe("product_123");
+	});
+
+	it("answerPreCheckoutQuery API call is recorded", async () => {
+		const bot = new Bot("test");
+		bot.on("pre_checkout_query", async (ctx) => {
+			await ctx.answerPreCheckoutQuery({ ok: true });
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		await user.sendPreCheckoutQuery({ invoice_payload: "test_payload" });
+
+		const call = env.lastApiCall("answerPreCheckoutQuery");
+		expect(call).toBeDefined();
+		expect(call?.params).toBeDefined();
+	});
+
+	it("user.sendSuccessfulPayment() emits pre_checkout_query then successful_payment", async () => {
+		const bot = new Bot("test");
+		const events: string[] = [];
+		bot.on("pre_checkout_query", async (ctx) => {
+			events.push("pre_checkout_query");
+			await ctx.answerPreCheckoutQuery({ ok: true });
+		});
+		let received: ContextType<Bot, "successful_payment"> | undefined;
+		bot.on("successful_payment", (ctx) => {
+			events.push("successful_payment");
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser({ first_name: "Payer" });
+
+		await user.sendSuccessfulPayment({
+			currency: "XTR",
+			total_amount: 100,
+			invoice_payload: "sub_monthly",
+		});
+
+		expect(events).toEqual(["pre_checkout_query", "successful_payment"]);
+		expect(received).toBeDefined();
+		expect(received?.from?.firstName).toBe("Payer");
+		expect(received?.successfulPayment?.currency).toBe("XTR");
+		expect(received?.successfulPayment?.totalAmount).toBe(100);
+		expect(received?.successfulPayment?.invoicePayload).toBe("sub_monthly");
+	});
+
+	it("user.sendSuccessfulPayment() pre_checkout_query inherits payment fields", async () => {
+		const bot = new Bot("test");
+		let preCheckout: ContextType<Bot, "pre_checkout_query"> | undefined;
+		bot.on("pre_checkout_query", async (ctx) => {
+			preCheckout = ctx;
+			await ctx.answerPreCheckoutQuery({ ok: true });
+		});
+		bot.on("successful_payment", () => {});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		await user.sendSuccessfulPayment({
+			currency: "USD",
+			total_amount: 500,
+			invoice_payload: "product_123",
+		});
+
+		expect(preCheckout).toBeDefined();
+		expect(preCheckout?.currency).toBe("USD");
+		expect(preCheckout?.totalAmount).toBe(500);
+		expect(preCheckout?.invoicePayload).toBe("product_123");
+	});
+
+	it("user.sendSuccessfulPayment() throws when bot does not handle pre_checkout_query", async () => {
+		const bot = new Bot("test");
+		bot.on("successful_payment", () => {});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		expect(
+			user.sendSuccessfulPayment({ invoice_payload: "no_handler" }),
+		).rejects.toThrow("Bot did not call answerPreCheckoutQuery");
+	});
+
+	it("user.sendSuccessfulPayment() throws when bot rejects pre_checkout_query", async () => {
+		const bot = new Bot("test");
+		bot.on("pre_checkout_query", async (ctx) => {
+			await ctx.answerPreCheckoutQuery({
+				ok: false,
+				error_message: "Out of stock",
+			});
+		});
+		bot.on("successful_payment", () => {});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		expect(
+			user.sendSuccessfulPayment({ invoice_payload: "rejected" }),
+		).rejects.toThrow("Bot rejected pre_checkout_query");
+	});
+
+	it("user.sendSuccessfulPayment(chat, ...) routes to group chat", async () => {
+		const bot = new Bot("test");
+		bot.on("pre_checkout_query", async (ctx) => {
+			await ctx.answerPreCheckoutQuery({ ok: true });
+		});
+		let received: ContextType<Bot, "successful_payment"> | undefined;
+		bot.on("successful_payment", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const group = env.createChat({ type: "group", title: "Payment Group" });
+
+		await user.sendSuccessfulPayment(group, {
+			invoice_payload: "group_purchase",
+		});
+
+		expect(received?.chat?.id).toBe(group.payload.id);
+		expect(received?.successfulPayment?.invoicePayload).toBe("group_purchase");
+	});
+
+	it("user.sendShippingQuery() emits shipping_query event", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "shipping_query"> | undefined;
+		bot.on("shipping_query", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser({ first_name: "Shopper" });
+
+		await user.sendShippingQuery({
+			invoice_payload: "physical_item",
+		});
+
+		expect(received).toBeDefined();
+		expect(received?.from?.firstName).toBe("Shopper");
+		expect(received?.invoicePayload).toBe("physical_item");
+		expect(received?.shippingAddress?.countryCode).toBe("US");
+	});
+
+	it("MessageObject.successfulPayment() fluent builder sets payment fields", () => {
+		const msg = new MessageObject().successfulPayment({
+			currency: "EUR",
+			total_amount: 999,
+			invoice_payload: "order_456",
+		});
+
+		expect(msg.payload.successful_payment).toBeDefined();
+		expect(msg.payload.successful_payment?.currency).toBe("EUR");
+		expect(msg.payload.successful_payment?.total_amount).toBe(999);
+		expect(msg.payload.successful_payment?.invoice_payload).toBe("order_456");
+		expect(msg.payload.successful_payment?.telegram_payment_charge_id).toBeDefined();
+		expect(msg.payload.successful_payment?.provider_payment_charge_id).toBeDefined();
+	});
+
+	it("user.in(chat).sendSuccessfulPayment() scoped variant", async () => {
+		const bot = new Bot("test");
+		bot.on("pre_checkout_query", async (ctx) => {
+			await ctx.answerPreCheckoutQuery({ ok: true });
+		});
+		let received: ContextType<Bot, "successful_payment"> | undefined;
+		bot.on("successful_payment", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const group = env.createChat({ type: "group", title: "Scoped Pay" });
+
+		await user.in(group).sendSuccessfulPayment({
+			invoice_payload: "scoped_payment",
+		});
+
+		expect(received?.chat?.id).toBe(group.payload.id);
+		expect(received?.successfulPayment?.invoicePayload).toBe("scoped_payment");
 	});
 });

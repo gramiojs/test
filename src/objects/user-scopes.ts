@@ -1,4 +1,4 @@
-import type { TelegramContact, TelegramLocation, TelegramReactionTypeEmojiEmoji, TelegramSticker } from "@gramio/types";
+import type { TelegramContact, TelegramLocation, TelegramReactionTypeEmojiEmoji, TelegramSticker, TelegramSuccessfulPayment } from "@gramio/types";
 import type { FormattableString } from "gramio";
 import type { ChatObject } from "./chat.ts";
 import type { MediaOptions, MessageOptions } from "./user.ts";
@@ -126,6 +126,11 @@ export class UserInChatScope {
 	 */
 	sendInlineQuery(query: string, options?: { offset?: string }) {
 		return this.user.sendInlineQuery(query, this.chat, options);
+	}
+
+	/** Send a successful payment service message to the scoped chat. */
+	sendSuccessfulPayment(overrides?: Partial<TelegramSuccessfulPayment>) {
+		return this.user.sendSuccessfulPayment(this.chat, overrides);
 	}
 
 	/** Join the scoped chat. */
