@@ -28,10 +28,10 @@ export type { MediaOptions, MessageOptions } from "./objects/user.ts";
 
 export let lastUpdateId = 0;
 
-export interface ApiCall {
-	method: keyof APIMethods;
-	params: unknown;
-	response: unknown;
+export interface ApiCall<Method extends keyof APIMethods = keyof APIMethods> {
+	method: Method;
+	params: APIMethodParams<Method>;
+	response: APIMethodReturn<Method>;
 }
 
 /**
@@ -95,7 +95,7 @@ export class TelegramTestEnvironment {
 							? handler(params as never)
 							: env.mockApiResponse(method, params);
 
-						env.apiCalls.push({ method, params, response });
+						env.apiCalls.push({ method, params, response } as ApiCall);
 
 						if (response instanceof TelegramError) {
 							return Promise.reject(
@@ -176,11 +176,21 @@ export class TelegramTestEnvironment {
 	/** Return the last recorded API call for `method`, or `undefined` if none. */
 	lastApiCall<Method extends keyof APIMethods>(
 		method: Method,
-	): ApiCall | undefined {
+	): ApiCall<Method> | undefined {
 		for (let i = this.apiCalls.length - 1; i >= 0; i--) {
-			if (this.apiCalls[i].method === method) return this.apiCalls[i];
+			if (this.apiCalls[i].method === method)
+				return this.apiCalls[i] as ApiCall<Method>;
 		}
 		return undefined;
+	}
+
+	/** Return all recorded API calls for `method` with typed params and response. */
+	filterApiCalls<Method extends keyof APIMethods>(
+		method: Method,
+	): ApiCall<Method>[] {
+		return this.apiCalls.filter(
+			(c): c is ApiCall<Method> => c.method === method,
+		);
 	}
 
 	emitUpdate(update: TelegramUpdate | MessageObject) {
