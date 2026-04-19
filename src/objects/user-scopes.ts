@@ -27,13 +27,25 @@ export class UserOnMessageScope {
 	/**
 	 * Find an inline button by its visible text and click it.
 	 * Throws if the message has no inline keyboard or no matching button.
+	 *
+	 * Tolerates `reply_markup` set to a Builder instance (e.g. `InlineKeyboard`
+	 * from `@gramio/keyboards`) by calling its `toJSON()` if present.
 	 */
 	clickByText(buttonText: string) {
-		const markup = this.message.payload.reply_markup;
+		const raw = this.message.payload.reply_markup as
+			| { inline_keyboard?: unknown; toJSON?: () => unknown }
+			| undefined;
+		const markup =
+			raw && typeof raw.toJSON === "function"
+				? (raw.toJSON() as { inline_keyboard?: unknown })
+				: raw;
 		if (!markup || !("inline_keyboard" in markup)) {
 			throw new Error("Message has no inline keyboard");
 		}
-		for (const row of markup.inline_keyboard) {
+		const rows = markup.inline_keyboard as Array<
+			Array<{ text?: string; callback_data?: string }>
+		>;
+		for (const row of rows) {
 			for (const btn of row) {
 				if (btn.text === buttonText && btn.callback_data !== undefined) {
 					return this.user.click(btn.callback_data, this.message);

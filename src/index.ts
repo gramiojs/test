@@ -22,6 +22,7 @@ import { ReactObject } from "./objects/react.ts";
 import { ShippingQueryObject } from "./objects/shipping-query.ts";
 import { UserInChatScope, UserOnMessageScope } from "./objects/user-scopes.ts";
 import { UserObject } from "./objects/user.ts";
+import { normalizeParams } from "./utils.ts";
 
 export { CallbackQueryObject, ChatObject, ChosenInlineResultObject, InlineQueryObject, MessageObject, PreCheckoutQueryObject, ReactObject, ShippingQueryObject, UserInChatScope, UserOnMessageScope, UserObject };
 export type { MediaOptions, MessageOptions } from "./objects/user.ts";
@@ -71,6 +72,9 @@ export class TelegramTestEnvironment {
 		(params: never) => unknown
 	>();
 
+	/** Cached bubble instances keyed by `${chatId}:${messageId}`. */
+	private bubbleCache = new Map<string, MessageObject>();
+
 	constructor(bot: AnyBot) {
 		this.bot = bot;
 		this.interceptApi();
@@ -95,7 +99,13 @@ export class TelegramTestEnvironment {
 							? handler(params as never)
 							: env.mockApiResponse(method, params);
 
-						env.apiCalls.push({ method, params, response } as ApiCall);
+						const recordedParams = normalizeParams(params);
+						env.apiCalls.push({
+							method,
+							params: recordedParams,
+							response,
+						} as ApiCall);
+						env.updateBubbleFor(method, recordedParams, response);
 
 						if (response instanceof TelegramError) {
 							return Promise.reject(
@@ -168,9 +178,10 @@ export class TelegramTestEnvironment {
 		}
 	}
 
-	/** Clear all recorded API calls. */
+	/** Clear all recorded API calls (also drops cached bot-message bubbles). */
 	clearApiCalls() {
 		this.apiCalls = [];
+		this.bubbleCache.clear();
 	}
 
 	/** Return the last recorded API call for `method`, or `undefined` if none. */
@@ -191,6 +202,120 @@ export class TelegramTestEnvironment {
 		return this.apiCalls.filter(
 			(c): c is ApiCall<Method> => c.method === method,
 		);
+	}
+
+	/**
+	 * Return a `MessageObject` mirror of the most recent bot-originated message
+	 * (currently tracks `sendMessage`). Text / caption / reply_markup are kept
+	 * in sync with subsequent `editMessageText`, `editMessageCaption`, and
+	 * `editMessageReplyMarkup` calls — so `user.on(bubble).clickByText(...)`
+	 * always sees the current buttons without a manual refresh, even on a
+	 * reference captured before the edit.
+	 *
+	 * Repeated calls return the same instance for the same `(chat_id, message_id)`.
+	 */
+	lastBotMessage(opts?: {
+		chat?: ChatObject | number;
+	}): MessageObject | undefined {
+		const chatId =
+			opts?.chat instanceof ChatObject
+				? opts.chat.payload.id
+				: typeof opts?.chat === "number"
+					? opts.chat
+					: undefined;
+
+		for (let i = this.apiCalls.length - 1; i >= 0; i--) {
+			const call = this.apiCalls[i];
+			if (call.method !== "sendMessage") continue;
+			const params = call.params as { chat_id?: number | string };
+			const response = call.response as { message_id?: number } | undefined;
+			if (chatId !== undefined && params.chat_id !== chatId) continue;
+			if (
+				typeof response?.message_id !== "number" ||
+				params.chat_id === undefined
+			)
+				continue;
+			return this.bubbleCache.get(`${params.chat_id}:${response.message_id}`);
+		}
+		return undefined;
+	}
+
+	/**
+	 * Return the `MessageObject` bubble for a specific `(chat_id, message_id)`,
+	 * or `undefined` if the bot never sent that message.
+	 */
+	botMessage(
+		chatId: number | string,
+		messageId: number,
+	): MessageObject | undefined {
+		return this.bubbleCache.get(`${chatId}:${messageId}`);
+	}
+
+	/**
+	 * @internal Called from the proxy after each recorded API call. Eagerly
+	 * creates / mutates a cached `MessageObject` bubble so references captured
+	 * before an edit stay up-to-date.
+	 */
+	updateBubbleFor(
+		method: keyof APIMethods,
+		params: Record<string, unknown>,
+		response: unknown,
+	) {
+		if (method === "sendMessage") {
+			const chatId = params.chat_id as number | string | undefined;
+			const res = response as
+				| { message_id?: number; chat?: TelegramChat; date?: number }
+				| undefined;
+			if (chatId === undefined || typeof res?.message_id !== "number") return;
+
+			const key = `${chatId}:${res.message_id}`;
+			let bubble = this.bubbleCache.get(key);
+			if (!bubble) {
+				bubble = new MessageObject({
+					message_id: res.message_id,
+					chat:
+						res.chat ??
+						({ id: chatId as number, type: "private" } as TelegramChat),
+					date: res.date ?? Math.floor(Date.now() / 1000),
+				});
+				this.bubbleCache.set(key, bubble);
+			}
+			bubble.payload.text = params.text as string | undefined;
+			bubble.payload.caption = params.caption as string | undefined;
+			bubble.payload.reply_markup = params.reply_markup as never;
+			bubble.payload.entities = params.entities as never;
+			bubble.payload.caption_entities = params.caption_entities as never;
+			return;
+		}
+
+		if (
+			method === "editMessageText" ||
+			method === "editMessageCaption" ||
+			method === "editMessageReplyMarkup"
+		) {
+			const chatId = params.chat_id as number | string | undefined;
+			const messageId = params.message_id as number | undefined;
+			if (chatId === undefined || typeof messageId !== "number") return;
+
+			const bubble = this.bubbleCache.get(`${chatId}:${messageId}`);
+			if (!bubble) return;
+
+			if (method === "editMessageText") {
+				bubble.payload.text = params.text as string | undefined;
+				if ("reply_markup" in params)
+					bubble.payload.reply_markup = params.reply_markup as never;
+				if ("entities" in params)
+					bubble.payload.entities = params.entities as never;
+			} else if (method === "editMessageCaption") {
+				bubble.payload.caption = params.caption as string | undefined;
+				if ("reply_markup" in params)
+					bubble.payload.reply_markup = params.reply_markup as never;
+				if ("caption_entities" in params)
+					bubble.payload.caption_entities = params.caption_entities as never;
+			} else {
+				bubble.payload.reply_markup = params.reply_markup as never;
+			}
+		}
 	}
 
 	emitUpdate(update: TelegramUpdate | MessageObject) {

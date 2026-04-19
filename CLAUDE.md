@@ -22,8 +22,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Replaces `bot.api` with a `Proxy` that intercepts all outgoing API calls (no real HTTP), records them in `env.apiCalls`, and returns mock responses
 - Auto-assigns incrementing `update_id` to all updates passed through `emitUpdate()`
 - Creates users (`createUser`) and chats (`createChat`), linking them to the environment
-- `clearApiCalls()` empties the `apiCalls` array
+- `clearApiCalls()` empties the `apiCalls` array **and** drops the bubble cache
 - `lastApiCall(method)` returns the most recent recorded call for `method`, or `undefined`
+- `filterApiCalls(method)` returns all calls for `method` with typed params/response
+- `lastBotMessage(opts?)` / `botMessage(chatId, msgId)` return a `MessageObject` bubble tracking the bot's sent messages (see Bubble tracking below)
+
+### Params normalization (`src/utils.ts` → `normalizeParams`)
+
+Before pushing to `env.apiCalls`, the proxy passes params through `normalizeParams`:
+- `reply_markup` with a `.toJSON()` method (e.g. `InlineKeyboard` instance from `@gramio/keyboards`) is unwrapped to plain JSON.
+- `results[].reply_markup` inside `answerInlineQuery` is unwrapped the same way.
+- **Not** a deep recursive walk: other `toJSON`-bearing values (`Date`, `URL`, `Buffer`) are intentionally preserved. Only the known Builder locations are touched.
+
+Net effect: `env.apiCalls[i].params.reply_markup.inline_keyboard` is always accessible as plain data — tests never need `JSON.parse(JSON.stringify(...))` roundtrips, and `clickByText` works regardless of whether the bot used a Builder or a plain object.
+
+### Bubble tracking (`env.lastBotMessage` / `env.botMessage`)
+
+The environment maintains a `bubbleCache: Map<"${chatId}:${messageId}", MessageObject>`. On every proxy call, `updateBubbleFor(method, params, response)` is invoked:
+- `sendMessage` → creates (or updates) a `MessageObject` keyed by the response's `message_id`, populating `text`, `caption`, `reply_markup`, `entities`, `caption_entities` from params.
+- `editMessageText` / `editMessageCaption` / `editMessageReplyMarkup` → looks up the cached bubble by `(chat_id, message_id)` and mutates the matching fields in place.
+
+Because mutation is eager (happens in the proxy, not lazily on read), a `MessageObject` reference obtained via `env.lastBotMessage()` before an edit still reflects the edit after it happens — tests can pass `bubble` to `user.on(bubble).clickByText(...)` repeatedly across multiple edits without refreshing. Currently only `sendMessage` originates bubbles; other send-like methods (`sendPhoto`, etc.) are not yet tracked.
 
 ### Object builders: `src/objects/`
 

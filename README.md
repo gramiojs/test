@@ -62,9 +62,12 @@ const env = new TelegramTestEnvironment(bot);
 - **`env.emitUpdate(update)`** — sends a raw `TelegramUpdate` or `MessageObject` to the bot
 - **`env.onApi(method, handler)`** — override the response for a specific API method (see [Mocking API Responses](#mocking-api-responses))
 - **`env.offApi(method?)`** — remove a custom handler (or all handlers if no method given)
-- **`env.apiCalls`** — array of `{ method, params, response }` recording every API call the bot made
-- **`env.clearApiCalls()`** — empties the `apiCalls` array (useful between logical test phases)
+- **`env.apiCalls`** — array of `{ method, params, response }` recording every API call the bot made. Builder instances (e.g. `InlineKeyboard`) in `params.reply_markup` and `params.results[].reply_markup` are unwrapped to plain JSON before recording, so you never need to `JSON.parse(JSON.stringify(...))` to assert on them.
+- **`env.clearApiCalls()`** — empties the `apiCalls` array and drops the bubble cache (useful between logical test phases)
 - **`env.lastApiCall(method)`** — returns the most recent recorded call for `method`, or `undefined` if none
+- **`env.filterApiCalls(method)`** — returns all recorded calls for `method` with typed params and response
+- **`env.lastBotMessage(opts?)`** — returns a `MessageObject` mirror of the bot's most recent `sendMessage`, or `undefined`. Pass `{ chat }` to scope to a specific chat. The returned bubble is automatically kept in sync with subsequent `editMessageText` / `editMessageCaption` / `editMessageReplyMarkup` calls — even on references captured before the edit — so `user.on(bubble).clickByText(...)` always sees current buttons. Repeated calls return the same instance for the same `(chat_id, message_id)`.
+- **`env.botMessage(chatId, messageId)`** — look up a specific bubble by id, or `undefined` if the bot never sent that message
 - **`env.users`** / **`env.chats`** — all created users and chats
 
 ### `UserObject` — the primary actor
@@ -245,7 +248,7 @@ await user.on(msg).click("action:1");
 
 #### `user.on(msg).clickByText(buttonText)` — click an inline button by its label
 
-Scans the message's `inline_keyboard` for a button whose `text` matches, then emits a `callback_query` for its `callback_data`. Throws if no inline keyboard is present or no button matches.
+Scans the message's `inline_keyboard` for a button whose `text` matches, then emits a `callback_query` for its `callback_data`. Throws if no inline keyboard is present or no button matches. Accepts both plain JSON and Builder instances (e.g. `InlineKeyboard` from `@gramio/keyboards`) — Builders are unwrapped via `toJSON()` automatically.
 
 ```ts
 msg.payload.reply_markup = {
@@ -256,6 +259,26 @@ msg.payload.reply_markup = {
 };
 
 await user.on(msg).clickByText("Option B"); // emits callback_query with data "opt:b"
+```
+
+Most commonly paired with `env.lastBotMessage()` — the bubble's `reply_markup` stays in sync with the bot's edits automatically, so no manual refresh is needed between a button click and the next:
+
+```ts
+bot.on("message", (ctx) =>
+    ctx.send("Pick:", {
+        reply_markup: new InlineKeyboard().text("Next", "next"),
+    }),
+);
+bot.on("callback_query:next", (ctx) =>
+    ctx.editText("Done!", {
+        reply_markup: new InlineKeyboard().text("Restart", "restart"),
+    }),
+);
+
+await user.sendCommand("start");
+const bubble = env.lastBotMessage()!;
+await user.on(bubble).clickByText("Next");    // triggers the edit
+await user.on(bubble).clickByText("Restart"); // same bubble, updated markup
 ```
 
 #### `user.editMessage(message, text)` — edit a message

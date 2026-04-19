@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { Bot, TelegramError, type ContextType } from "gramio";
+import { Bot, type ContextType, InlineKeyboard, TelegramError } from "gramio";
 import {
+	apiError,
 	CallbackQueryObject,
 	ChatObject,
 	ChosenInlineResultObject,
@@ -11,7 +12,6 @@ import {
 	ShippingQueryObject,
 	TelegramTestEnvironment,
 	UserObject,
-	apiError,
 } from "../src/index.ts";
 
 describe("TelegramTestEnvironment", () => {
@@ -343,7 +343,10 @@ describe("Reactions", () => {
 
 		expect(received).toBeDefined();
 		expect(received?.newReactions).toHaveLength(1);
-		expect(received?.newReactions[0]).toMatchObject({ type: "emoji", emoji: "👍" });
+		expect(received?.newReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "👍",
+		});
 		expect(received?.oldReactions).toHaveLength(0);
 		expect(received?.user?.id).toBe(user.payload.id);
 	});
@@ -375,12 +378,18 @@ describe("Reactions", () => {
 		const user = env.createUser();
 		const msg = await user.sendMessage("Hello");
 
-		await user.react("👍", msg);       // sets memory: ["👍"]
-		await user.react("❤", msg);        // old auto = ["👍"], new = ["❤"]
+		await user.react("👍", msg); // sets memory: ["👍"]
+		await user.react("❤", msg); // old auto = ["👍"], new = ["❤"]
 
 		expect(received?.oldReactions).toHaveLength(1);
-		expect(received?.oldReactions[0]).toMatchObject({ type: "emoji", emoji: "👍" });
-		expect(received?.newReactions[0]).toMatchObject({ type: "emoji", emoji: "❤" });
+		expect(received?.oldReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "👍",
+		});
+		expect(received?.newReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "❤",
+		});
 	});
 
 	it("should trigger bot.reaction() handler (simple form)", async () => {
@@ -402,14 +411,16 @@ describe("Reactions", () => {
 	it("should not trigger bot.reaction() handler when removing a reaction", async () => {
 		const bot = new Bot("test");
 		let triggerCount = 0;
-		bot.reaction("👍", async () => { triggerCount++; });
+		bot.reaction("👍", async () => {
+			triggerCount++;
+		});
 
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser();
 		const msg = await user.sendMessage("Hello");
 
-		await user.react("👍", msg);  // triggers (adds 👍)
-		await user.react([], msg);    // removes 👍 — should NOT trigger again
+		await user.react("👍", msg); // triggers (adds 👍)
+		await user.react([], msg); // removes 👍 — should NOT trigger again
 
 		expect(triggerCount).toBe(1);
 	});
@@ -428,7 +439,10 @@ describe("Reactions", () => {
 		await user.react(new ReactObject().on(msg).add("👍"));
 
 		expect(received?.newReactions).toHaveLength(1);
-		expect(received?.newReactions[0]).toMatchObject({ type: "emoji", emoji: "👍" });
+		expect(received?.newReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "👍",
+		});
 		expect(received?.user?.id).toBe(user.payload.id);
 	});
 
@@ -445,8 +459,14 @@ describe("Reactions", () => {
 
 		await user.react(new ReactObject().on(msg).add("❤").remove("👍"));
 
-		expect(received?.newReactions[0]).toMatchObject({ type: "emoji", emoji: "❤" });
-		expect(received?.oldReactions[0]).toMatchObject({ type: "emoji", emoji: "👍" });
+		expect(received?.newReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "❤",
+		});
+		expect(received?.oldReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "👍",
+		});
 	});
 
 	it("should support ReactObject with variadic add", async () => {
@@ -521,33 +541,46 @@ describe("Reactions", () => {
 	it("ReactObject auto-tracks via .on(msg)", async () => {
 		const bot = new Bot("test");
 		let received: ContextType<Bot, "message_reaction"> | undefined;
-		bot.on("message_reaction", (ctx) => { received = ctx; });
+		bot.on("message_reaction", (ctx) => {
+			received = ctx;
+		});
 
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser();
 		const msg = await user.sendMessage("Hello");
 
-		await user.react(new ReactObject().on(msg).add("👍"));  // memory: ["👍"]
-		await user.react(new ReactObject().on(msg).add("❤"));   // old auto = ["👍"]
+		await user.react(new ReactObject().on(msg).add("👍")); // memory: ["👍"]
+		await user.react(new ReactObject().on(msg).add("❤")); // old auto = ["👍"]
 
-		expect(received?.oldReactions[0]).toMatchObject({ type: "emoji", emoji: "👍" });
-		expect(received?.newReactions[0]).toMatchObject({ type: "emoji", emoji: "❤" });
+		expect(received?.oldReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "👍",
+		});
+		expect(received?.newReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "❤",
+		});
 	});
 
 	it("ReactObject explicit .remove() overrides auto-tracking", async () => {
 		const bot = new Bot("test");
 		let received: ContextType<Bot, "message_reaction"> | undefined;
-		bot.on("message_reaction", (ctx) => { received = ctx; });
+		bot.on("message_reaction", (ctx) => {
+			received = ctx;
+		});
 
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser();
 		const msg = await user.sendMessage("Hello");
 
-		await user.react("👍", msg);  // memory: ["👍"]
+		await user.react("👍", msg); // memory: ["👍"]
 		// .remove("😢") explicitly sets old_reaction — auto-tracking is skipped
 		await user.react(new ReactObject().on(msg).add("❤").remove("😢"));
 
-		expect(received?.oldReactions[0]).toMatchObject({ type: "emoji", emoji: "😢" });
+		expect(received?.oldReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "😢",
+		});
 	});
 
 	it("ReactObject.from() overrides user", async () => {
@@ -617,7 +650,10 @@ describe("Inline query", () => {
 	it("should derive chat_type supergroup from a ChatObject", async () => {
 		const env = new TelegramTestEnvironment(new Bot("test"));
 		const user = env.createUser();
-		const supergroup = env.createChat({ type: "supergroup", title: "Super Group" });
+		const supergroup = env.createChat({
+			type: "supergroup",
+			title: "Super Group",
+		});
 
 		const inlineQuery = await user.sendInlineQuery("query", supergroup);
 
@@ -635,7 +671,9 @@ describe("Inline query", () => {
 		const user = env.createUser();
 		const group = env.createChat({ type: "group" });
 
-		const inlineQuery = await user.sendInlineQuery("term", group, { offset: "5" });
+		const inlineQuery = await user.sendInlineQuery("term", group, {
+			offset: "5",
+		});
 
 		expect(inlineQuery.payload.chat_type).toBe("group");
 		expect(receivedOffset).toBe("5");
@@ -687,7 +725,9 @@ describe("Inline query", () => {
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser();
 
-		await user.chooseInlineResult("id", "query", { inline_message_id: "msg-abc" });
+		await user.chooseInlineResult("id", "query", {
+			inline_message_id: "msg-abc",
+		});
 
 		expect(received?.inlineMessageId).toBe("msg-abc");
 	});
@@ -697,7 +737,9 @@ describe("Fluent scope API", () => {
 	it("user.in(chat).sendMessage() sends to that chat", async () => {
 		const bot = new Bot("test");
 		let received: ContextType<Bot, "message"> | undefined;
-		bot.on("message", (ctx) => { received = ctx; });
+		bot.on("message", (ctx) => {
+			received = ctx;
+		});
 
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser({ first_name: "Alice" });
@@ -762,7 +804,9 @@ describe("Fluent scope API", () => {
 	it("user.on(msg).react() reacts to that message", async () => {
 		const bot = new Bot("test");
 		let received: ContextType<Bot, "message_reaction"> | undefined;
-		bot.on("message_reaction", (ctx) => { received = ctx; });
+		bot.on("message_reaction", (ctx) => {
+			received = ctx;
+		});
 
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser();
@@ -770,29 +814,42 @@ describe("Fluent scope API", () => {
 
 		await user.on(msg).react("👍");
 
-		expect(received?.newReactions[0]).toMatchObject({ type: "emoji", emoji: "👍" });
+		expect(received?.newReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "👍",
+		});
 	});
 
 	it("user.on(msg).react() auto-tracks old reaction via message state", async () => {
 		const bot = new Bot("test");
 		let received: ContextType<Bot, "message_reaction"> | undefined;
-		bot.on("message_reaction", (ctx) => { received = ctx; });
+		bot.on("message_reaction", (ctx) => {
+			received = ctx;
+		});
 
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser();
 		const msg = await user.sendMessage("Hello");
 
-		await user.on(msg).react("👍");    // memory: ["👍"]
-		await user.on(msg).react("❤");     // old auto = ["👍"], new = ["❤"]
+		await user.on(msg).react("👍"); // memory: ["👍"]
+		await user.on(msg).react("❤"); // old auto = ["👍"], new = ["❤"]
 
-		expect(received?.newReactions[0]).toMatchObject({ type: "emoji", emoji: "❤" });
-		expect(received?.oldReactions[0]).toMatchObject({ type: "emoji", emoji: "👍" });
+		expect(received?.newReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "❤",
+		});
+		expect(received?.oldReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "👍",
+		});
 	});
 
 	it("user.on(msg).click() clicks inline button on that message", async () => {
 		const bot = new Bot("test");
 		let received: ContextType<Bot, "callback_query"> | undefined;
-		bot.on("callback_query", (ctx) => { received = ctx; });
+		bot.on("callback_query", (ctx) => {
+			received = ctx;
+		});
 
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser();
@@ -806,7 +863,9 @@ describe("Fluent scope API", () => {
 	it("user.in(chat).on(msg).react() chains correctly", async () => {
 		const bot = new Bot("test");
 		let received: ContextType<Bot, "message_reaction"> | undefined;
-		bot.reaction("🔥", (ctx) => { received = ctx; });
+		bot.reaction("🔥", (ctx) => {
+			received = ctx;
+		});
 
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser();
@@ -816,13 +875,18 @@ describe("Fluent scope API", () => {
 		await user.in(group).on(msg).react("🔥");
 
 		expect(received).toBeDefined();
-		expect(received?.newReactions[0]).toMatchObject({ type: "emoji", emoji: "🔥" });
+		expect(received?.newReactions[0]).toMatchObject({
+			type: "emoji",
+			emoji: "🔥",
+		});
 	});
 
 	it("user.in(chat).on(msg).click() chains correctly", async () => {
 		const bot = new Bot("test");
 		let received: ContextType<Bot, "callback_query"> | undefined;
-		bot.on("callback_query", (ctx) => { received = ctx; });
+		bot.on("callback_query", (ctx) => {
+			received = ctx;
+		});
 
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser();
@@ -919,15 +983,14 @@ describe("onApi / offApi", () => {
 		});
 
 		const env = new TelegramTestEnvironment(bot);
-		env.onApi(
-			"sendMessage",
-			apiError(403, "Forbidden"),
-		);
+		env.onApi("sendMessage", apiError(403, "Forbidden"));
 
 		const user = env.createUser();
 		await user.sendMessage("Hello");
 
-		expect((caughtError as TelegramError<"sendMessage">).method).toBe("sendMessage");
+		expect((caughtError as TelegramError<"sendMessage">).method).toBe(
+			"sendMessage",
+		);
 	});
 
 	it("should support conditional error/success in dynamic handler", async () => {
@@ -986,7 +1049,9 @@ describe("onApi / offApi", () => {
 
 		expect(caughtError).toBeInstanceOf(TelegramError);
 		expect((caughtError as TelegramError<"sendMessage">).code).toBe(429);
-		expect((caughtError as TelegramError<"sendMessage">).payload?.retry_after).toBe(30);
+		expect(
+			(caughtError as TelegramError<"sendMessage">).payload?.retry_after,
+		).toBe(30);
 	});
 
 	it("should reset specific handler with offApi(method)", async () => {
@@ -996,11 +1061,18 @@ describe("onApi / offApi", () => {
 		});
 
 		const env = new TelegramTestEnvironment(bot);
-		env.onApi("sendMessage", { message_id: 42, date: 0, chat: { id: 1, type: "private" as const }, text: "custom" });
+		env.onApi("sendMessage", {
+			message_id: 42,
+			date: 0,
+			chat: { id: 1, type: "private" as const },
+			text: "custom",
+		});
 
 		const user = env.createUser();
 		await user.sendMessage("Hello");
-		expect((env.apiCalls[0].response as { message_id: number }).message_id).toBe(42);
+		expect(
+			(env.apiCalls[0].response as { message_id: number }).message_id,
+		).toBe(42);
 
 		env.offApi("sendMessage");
 		await user.sendMessage("Hello again");
@@ -1009,7 +1081,9 @@ describe("onApi / offApi", () => {
 		const secondCall = env.apiCalls.find(
 			(c, i) => i > 0 && c.method === "sendMessage",
 		);
-		expect((secondCall?.response as { message_id: number }).message_id).not.toBe(42);
+		expect(
+			(secondCall?.response as { message_id: number }).message_id,
+		).not.toBe(42);
 	});
 
 	it("should reset all handlers with offApi()", async () => {
@@ -1035,9 +1109,7 @@ describe("onApi / offApi", () => {
 
 		// After offApi(), default mock is used — message_id won't be 777
 		const call = env.apiCalls.find((c) => c.method === "sendMessage");
-		expect((call?.response as { message_id: number }).message_id).not.toBe(
-			777,
-		);
+		expect((call?.response as { message_id: number }).message_id).not.toBe(777);
 	});
 
 	it("should record apiError responses in apiCalls", async () => {
@@ -1896,8 +1968,12 @@ describe("Payments", () => {
 		expect(msg.payload.successful_payment?.currency).toBe("EUR");
 		expect(msg.payload.successful_payment?.total_amount).toBe(999);
 		expect(msg.payload.successful_payment?.invoice_payload).toBe("order_456");
-		expect(msg.payload.successful_payment?.telegram_payment_charge_id).toBeDefined();
-		expect(msg.payload.successful_payment?.provider_payment_charge_id).toBeDefined();
+		expect(
+			msg.payload.successful_payment?.telegram_payment_charge_id,
+		).toBeDefined();
+		expect(
+			msg.payload.successful_payment?.provider_payment_charge_id,
+		).toBeDefined();
 	});
 
 	it("user.in(chat).sendSuccessfulPayment() scoped variant", async () => {
@@ -1920,5 +1996,257 @@ describe("Payments", () => {
 
 		expect(received?.chat?.id).toBe(group.payload.id);
 		expect(received?.successfulPayment?.invoicePayload).toBe("scoped_payment");
+	});
+});
+
+describe("reply_markup normalization in apiCalls", () => {
+	it("unwraps InlineKeyboard Builder to plain JSON in apiCalls", async () => {
+		const bot = new Bot("test");
+		bot.on("message", (ctx) =>
+			ctx.send("Pick:", {
+				reply_markup: new InlineKeyboard().text("A", "a").text("B", "b"),
+			}),
+		);
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		await user.sendMessage("hi");
+
+		const send = env.lastApiCall("sendMessage");
+		expect(send).toBeDefined();
+		const rm = send?.params.reply_markup as { inline_keyboard?: unknown };
+		expect(rm).toBeDefined();
+		expect(Array.isArray(rm.inline_keyboard)).toBe(true);
+		expect((rm as { toJSON?: unknown }).toJSON).toBeUndefined();
+		expect(rm).not.toBeInstanceOf(InlineKeyboard);
+	});
+
+	it("leaves plain-object reply_markup untouched", async () => {
+		const bot = new Bot("test");
+		const plain = {
+			inline_keyboard: [[{ text: "X", callback_data: "x" }]],
+		};
+		bot.on("message", (ctx) => ctx.send("plain", { reply_markup: plain }));
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		await user.sendMessage("hi");
+
+		const send = env.lastApiCall("sendMessage");
+		expect(send?.params.reply_markup).toEqual(plain);
+	});
+
+	it("unwraps reply_markup inside answerInlineQuery.results[]", async () => {
+		const bot = new Bot("test");
+		bot.on("inline_query", (ctx) =>
+			ctx.answer(
+				[
+					{
+						type: "article",
+						id: "1",
+						title: "Result",
+						input_message_content: { message_text: "hi" },
+						reply_markup: new InlineKeyboard().text("go", "go"),
+					},
+				],
+				{ cache_time: 0 },
+			),
+		);
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		await user.sendInlineQuery("test");
+
+		const call = env.lastApiCall("answerInlineQuery");
+		const first = (
+			call?.params.results as Array<{ reply_markup?: unknown }>
+		)[0];
+		expect(first.reply_markup).toEqual({
+			inline_keyboard: [[{ text: "go", callback_data: "go" }]],
+		});
+		expect(first.reply_markup).not.toBeInstanceOf(InlineKeyboard);
+	});
+
+	it("user.on(bubble).clickByText works after bot sends raw InlineKeyboard", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "callback_query"> | undefined;
+		bot.on("message", (ctx) =>
+			ctx.send("Choose:", {
+				reply_markup: new InlineKeyboard()
+					.text("Yes", "ans:yes")
+					.text("No", "ans:no"),
+			}),
+		);
+		bot.on("callback_query", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		await user.sendMessage("go");
+
+		const bubble = env.lastBotMessage();
+		if (!bubble) throw new Error("bubble missing");
+		await user.on(bubble).clickByText("No");
+
+		expect(received?.data).toBe("ans:no");
+	});
+
+	it("clickByText tolerates Builder assigned directly to msg.payload.reply_markup", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "callback_query"> | undefined;
+		bot.on("callback_query", (ctx) => {
+			received = ctx;
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const msg = await user.sendMessage("Pick:");
+		msg.payload.reply_markup = new InlineKeyboard()
+			.text("Alpha", "a")
+			.text("Beta", "b") as never;
+
+		await user.on(msg).clickByText("Beta");
+
+		expect(received?.data).toBe("b");
+	});
+});
+
+describe("env.lastBotMessage / botMessage bubble tracking", () => {
+	it("returns undefined when bot has not sent anything", () => {
+		const env = new TelegramTestEnvironment(new Bot("test"));
+		expect(env.lastBotMessage()).toBeUndefined();
+	});
+
+	it("returns a MessageObject mirroring the last sendMessage", async () => {
+		const bot = new Bot("test");
+		bot.on("message", (ctx) => ctx.send("hello from bot"));
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		await user.sendMessage("ping");
+
+		const bubble = env.lastBotMessage();
+		expect(bubble).toBeInstanceOf(MessageObject);
+		expect(bubble?.payload.text).toBe("hello from bot");
+	});
+
+	it("returns the same instance for the same message_id across calls", async () => {
+		const bot = new Bot("test");
+		bot.on("message", (ctx) => ctx.send("once"));
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		await user.sendMessage("ping");
+
+		expect(env.lastBotMessage()).toBe(env.lastBotMessage());
+	});
+
+	it("reflects editMessageText on the bubble automatically", async () => {
+		const bot = new Bot("test");
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		bot.on("message", (ctx) => ctx.send("original"));
+		await user.sendMessage("hi");
+
+		const bubble = env.lastBotMessage();
+		if (!bubble) throw new Error("bubble missing");
+		expect(bubble.payload.text).toBe("original");
+
+		await bot.api.editMessageText({
+			chat_id: user.asChat.payload.id,
+			message_id: bubble.payload.message_id,
+			text: "edited",
+			reply_markup: new InlineKeyboard().text("next", "n"),
+		});
+
+		const again = env.lastBotMessage();
+		expect(again).toBe(bubble);
+		expect(bubble.payload.text).toBe("edited");
+		expect(bubble.payload.reply_markup).toEqual({
+			inline_keyboard: [[{ text: "next", callback_data: "n" }]],
+		} as never);
+	});
+
+	it("clickByText on bubble works after reply_markup edit", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "callback_query"> | undefined;
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+
+		bot.on("message", (ctx) =>
+			ctx.send("initial", {
+				reply_markup: new InlineKeyboard().text("old", "old"),
+			}),
+		);
+		bot.on("callback_query", (ctx) => {
+			received = ctx;
+		});
+
+		await user.sendMessage("hi");
+		const bubble = env.lastBotMessage();
+		if (!bubble) throw new Error("bubble missing");
+
+		await bot.api.editMessageReplyMarkup({
+			chat_id: user.asChat.payload.id,
+			message_id: bubble.payload.message_id,
+			reply_markup: new InlineKeyboard().text("fresh", "fresh"),
+		});
+
+		await user.on(bubble).clickByText("fresh");
+		expect(received?.data).toBe("fresh");
+	});
+
+	it("scopes to a specific chat via opts.chat", async () => {
+		const bot = new Bot("test");
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const group = env.createChat({ type: "group", title: "G" });
+
+		bot.on("message", async (ctx) => {
+			if (ctx.chat?.type === "private") await ctx.send("to pm");
+			else await ctx.send("to group");
+		});
+
+		await user.sendMessage("in pm");
+		await user.in(group).sendMessage("in group");
+
+		expect(env.lastBotMessage({ chat: group })?.payload.text).toBe("to group");
+		expect(env.lastBotMessage({ chat: user.asChat })?.payload.text).toBe(
+			"to pm",
+		);
+	});
+
+	it("clearApiCalls drops the bubble cache", async () => {
+		const bot = new Bot("test");
+		bot.on("message", (ctx) => ctx.send("reply"));
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		await user.sendMessage("hi");
+
+		expect(env.lastBotMessage()).toBeDefined();
+		env.clearApiCalls();
+		expect(env.lastBotMessage()).toBeUndefined();
+	});
+
+	it("botMessage(chatId, messageId) looks up a specific bubble", async () => {
+		const bot = new Bot("test");
+		bot.on("message", (ctx) => ctx.send("first"));
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		await user.sendMessage("hi");
+
+		const bubble = env.lastBotMessage();
+		if (!bubble) throw new Error("bubble missing");
+		const sameById = env.botMessage(
+			user.asChat.payload.id,
+			bubble.payload.message_id,
+		);
+		expect(sameById).toBe(bubble);
+		expect(env.botMessage(user.asChat.payload.id, 9999)).toBeUndefined();
 	});
 });
