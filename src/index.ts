@@ -213,9 +213,17 @@ export class TelegramTestEnvironment {
 	 * reference captured before the edit.
 	 *
 	 * Repeated calls return the same instance for the same `(chat_id, message_id)`.
+	 *
+	 * Filters (all optional, combined with AND):
+	 * - `chat` — only consider sends to this chat
+	 * - `withReplyMarkup` — require the send to carry a `reply_markup` (useful
+	 *   when the bot emits a status message right after the interactive one)
+	 * - `where` — arbitrary predicate on the `sendMessage` call record
 	 */
 	lastBotMessage(opts?: {
 		chat?: ChatObject | number;
+		withReplyMarkup?: boolean;
+		where?: (call: ApiCall<"sendMessage">) => boolean;
 	}): MessageObject | undefined {
 		const chatId =
 			opts?.chat instanceof ChatObject
@@ -227,7 +235,10 @@ export class TelegramTestEnvironment {
 		for (let i = this.apiCalls.length - 1; i >= 0; i--) {
 			const call = this.apiCalls[i];
 			if (call.method !== "sendMessage") continue;
-			const params = call.params as { chat_id?: number | string };
+			const params = call.params as {
+				chat_id?: number | string;
+				reply_markup?: unknown;
+			};
 			const response = call.response as { message_id?: number } | undefined;
 			if (chatId !== undefined && params.chat_id !== chatId) continue;
 			if (
@@ -235,6 +246,8 @@ export class TelegramTestEnvironment {
 				params.chat_id === undefined
 			)
 				continue;
+			if (opts?.withReplyMarkup && !params.reply_markup) continue;
+			if (opts?.where && !opts.where(call as ApiCall<"sendMessage">)) continue;
 			return this.bubbleCache.get(`${params.chat_id}:${response.message_id}`);
 		}
 		return undefined;

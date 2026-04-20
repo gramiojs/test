@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `clearApiCalls()` empties the `apiCalls` array **and** drops the bubble cache
 - `lastApiCall(method)` returns the most recent recorded call for `method`, or `undefined`
 - `filterApiCalls(method)` returns all calls for `method` with typed params/response
-- `lastBotMessage(opts?)` / `botMessage(chatId, msgId)` return a `MessageObject` bubble tracking the bot's sent messages (see Bubble tracking below)
+- `lastBotMessage(opts?)` / `botMessage(chatId, msgId)` return a `MessageObject` bubble tracking the bot's sent messages (see Bubble tracking below). Filters on `lastBotMessage`: `chat`, `withReplyMarkup`, `where: (call) => bool` (all AND)
 
 ### Params normalization (`src/utils.ts` → `normalizeParams`)
 

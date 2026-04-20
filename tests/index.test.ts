@@ -2249,4 +2249,69 @@ describe("env.lastBotMessage / botMessage bubble tracking", () => {
 		expect(sameById).toBe(bubble);
 		expect(env.botMessage(user.asChat.payload.id, 9999)).toBeUndefined();
 	});
+
+	it("withReplyMarkup skips bubbles sent without a keyboard", async () => {
+		const bot = new Bot("test");
+		bot.on("message", async (ctx) => {
+			await ctx.send("Pick:", {
+				reply_markup: new InlineKeyboard().text("Go", "go"),
+			});
+			await ctx.send("Let's start!");
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		await user.sendMessage("hi");
+
+		expect(env.lastBotMessage()?.payload.text).toBe("Let's start!");
+		expect(env.lastBotMessage({ withReplyMarkup: true })?.payload.text).toBe(
+			"Pick:",
+		);
+	});
+
+	it("where predicate filters by arbitrary sendMessage criteria", async () => {
+		const bot = new Bot("test");
+		bot.on("message", async (ctx) => {
+			await ctx.send("Onboarding step 1");
+			await ctx.send("Onboarding step 2");
+			await ctx.send("Ready");
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		await user.sendMessage("start");
+
+		const step1 = env.lastBotMessage({
+			where: (c) => c.params.text === "Onboarding step 1",
+		});
+		expect(step1?.payload.text).toBe("Onboarding step 1");
+
+		const anyOnboarding = env.lastBotMessage({
+			where: (c) => String(c.params.text).startsWith("Onboarding"),
+		});
+		expect(anyOnboarding?.payload.text).toBe("Onboarding step 2");
+	});
+
+	it("withReplyMarkup + where combine with AND", async () => {
+		const bot = new Bot("test");
+		bot.on("message", async (ctx) => {
+			await ctx.send("A", {
+				reply_markup: new InlineKeyboard().text("a", "a"),
+			});
+			await ctx.send("B", {
+				reply_markup: new InlineKeyboard().text("b", "b"),
+			});
+			await ctx.send("status"); // no markup
+		});
+
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		await user.sendMessage("hi");
+
+		const bubble = env.lastBotMessage({
+			withReplyMarkup: true,
+			where: (c) => c.params.text === "A",
+		});
+		expect(bubble?.payload.text).toBe("A");
+	});
 });
