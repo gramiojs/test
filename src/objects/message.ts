@@ -277,6 +277,8 @@ export class MessageObject {
 			is_anonymous: true,
 			type: "regular",
 			allows_multiple_answers: false,
+			allows_revoting: false,
+			members_only: false,
 			...poll,
 		};
 		return this;

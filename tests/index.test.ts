@@ -89,6 +89,68 @@ describe("TelegramTestEnvironment", () => {
 });
 
 describe("User actions", () => {
+	it("emits stopped_message_generation with chat and thread identifiers", async () => {
+		const bot = new Bot("test");
+		let received:
+			| { draftId: number; threadId: number | undefined; chatId: number }
+			| undefined;
+		bot.on("stopped_message_generation", (context) => {
+			received = {
+				draftId: context.draftId,
+				threadId: context.threadId,
+				chatId: context.chatId,
+			};
+		});
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const chat = env.createChat({ id: -100, type: "supergroup" });
+
+		await user.stopMessageGeneration(77, {
+			chat,
+			messageThreadId: 9,
+		});
+
+		expect(received).toEqual({ draftId: 77, threadId: 9, chatId: -100 });
+	});
+
+	it("mocks nested ephemeral send parameters and receiver metadata", async () => {
+		const bot = new Bot("test");
+		const env = new TelegramTestEnvironment(bot);
+		const receiver = env.createUser({ first_name: "Receiver" });
+
+		const response = await bot.api.sendMessage({
+			chat_id: 1,
+			text: "Private",
+			ephemeral_message_parameters: {
+				receiver_user_id: receiver.payload.id,
+				callback_query_id: "query",
+				replace_callback_query_message: true,
+			},
+		});
+
+		expect(response.receiver_user).toEqual(receiver.payload);
+		expect(response.ephemeral_message_id).toBe(1);
+		expect(env.lastApiCall("sendMessage")?.params).toMatchObject({
+			ephemeral_message_parameters: {
+				receiver_user_id: receiver.payload.id,
+				callback_query_id: "query",
+				replace_callback_query_message: true,
+			},
+		});
+	});
+
+	it("rejects legacy top-level ephemeral send parameters at compile time", () => {
+		if (false) {
+			const bot = new Bot("test");
+			bot.api.sendMessage({
+				chat_id: 1,
+				text: "Legacy",
+				// @ts-expect-error Bot API 10.3 requires ephemeral_message_parameters
+				receiver_user_id: 2,
+			});
+		}
+	});
+
 	it("should send a PM to bot", async () => {
 		const bot = new Bot("test");
 		let received: ContextType<Bot, "message"> | undefined;

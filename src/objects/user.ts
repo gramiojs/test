@@ -40,6 +40,13 @@ export interface MediaOptions {
 	spoiler?: boolean;
 }
 
+export interface StopMessageGenerationOptions {
+	/** Chat containing the draft. Defaults to the user's private chat. */
+	chat?: ChatObject;
+	/** Identifier of the topic containing the draft. */
+	messageThreadId?: number;
+}
+
 /** Resolve a string or FormattableString to plain text + optional entities. */
 function resolveText(input: string | FormattableString): {
 	text: string;
@@ -640,6 +647,26 @@ export class UserObject {
 			update_id: 0,
 			message: serviceMessage.payload as MessageObject["payload"] & {
 				chat: NonNullable<MessageObject["payload"]["chat"]>;
+			},
+		});
+	}
+
+	/** Stop an in-progress rich-message draft and emit the Bot API update. */
+	async stopMessageGeneration(
+		draftId: number,
+		options: StopMessageGenerationOptions = {},
+	): Promise<void> {
+		this._checkEnvironment();
+		const chat = options.chat ?? this.asChat;
+
+		await this.environment!.emitUpdate({
+			update_id: 0,
+			stopped_message_generation: {
+				chat: chat.payload,
+				draft_id: draftId,
+				...(options.messageThreadId === undefined
+					? {}
+					: { message_thread_id: options.messageThreadId }),
 			},
 		});
 	}

@@ -25,7 +25,11 @@ import { UserObject } from "./objects/user.ts";
 import { normalizeParams } from "./utils.ts";
 
 export { CallbackQueryObject, ChatObject, ChosenInlineResultObject, InlineQueryObject, MessageObject, PreCheckoutQueryObject, ReactObject, ShippingQueryObject, UserInChatScope, UserOnMessageScope, UserObject };
-export type { MediaOptions, MessageOptions } from "./objects/user.ts";
+export type {
+	MediaOptions,
+	MessageOptions,
+	StopMessageGenerationOptions,
+} from "./objects/user.ts";
 
 export let lastUpdateId = 0;
 
@@ -66,6 +70,7 @@ export class TelegramTestEnvironment {
 	public apiCalls: ApiCall[] = [];
 
 	private lastMockMessageId = 0;
+	private lastMockEphemeralMessageId = 0;
 
 	private apiHandlers = new Map<
 		keyof APIMethods,
@@ -139,6 +144,34 @@ export class TelegramTestEnvironment {
 		method: keyof APIMethods,
 		params: Record<string, unknown>,
 	): unknown {
+		const ephemeral = params.ephemeral_message_parameters;
+		if (
+			ephemeral !== null &&
+			typeof ephemeral === "object" &&
+			typeof (ephemeral as { receiver_user_id?: unknown }).receiver_user_id ===
+				"number"
+		) {
+			const receiverUserId = (
+				ephemeral as { receiver_user_id: number }
+			).receiver_user_id;
+			const receiverUser = this.users.find(
+				(user) => user.payload.id === receiverUserId,
+			)?.payload ?? {
+				id: receiverUserId,
+				is_bot: false,
+				first_name: `User ${receiverUserId}`,
+			};
+
+			return {
+				message_id: ++this.lastMockMessageId,
+				date: Math.floor(Date.now() / 1000),
+				chat: { id: params.chat_id, type: "private" },
+				...(params.text === undefined ? {} : { text: params.text }),
+				receiver_user: receiverUser,
+				ephemeral_message_id: ++this.lastMockEphemeralMessageId,
+			};
+		}
+
 		if (method === "sendMessage") {
 			return {
 				message_id: ++this.lastMockMessageId,
