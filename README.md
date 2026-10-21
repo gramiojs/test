@@ -112,7 +112,7 @@ await user.sendMessage(group, format`${bold("Bold")} in group`);
 
 #### `user.sendReply(message, text)` — reply to a message
 
-Shortcut that automatically sets `reply_to_message` and targets the same chat the original message was in.
+Shortcut that automatically sets `reply_to_message` and targets the same chat the original message was in. If the original message has a `message_thread_id`, the reply preserves it, including when replying to another comment within a discussion.
 
 ```ts
 const msg = await user.sendMessage("Hello");

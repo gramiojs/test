@@ -50,6 +50,7 @@ Each builder wraps a Telegram type with auto-generated IDs and builder methods:
 
 - **`UserObject`** — Primary actor. Holds a `TelegramUser` payload and an `asChat` (private chat). Action methods create the correct Telegram objects and emit updates via the environment. Requires `environment` to be set (done by `env.createUser()`).
   - Text: `sendMessage(text|FormattableString, opts?)`, `sendReply(msg, text)`, `sendCommand(command, args?)`
+  - `sendReply` preserves the target message's `message_thread_id` when present, keeping nested replies in the same discussion; ordinary replies remain without a thread identifier.
   - Media: `sendPhoto`, `sendVideo`, `sendDocument`, `sendVoice`, `sendAudio`, `sendAnimation`, `sendVideoNote`, `sendSticker`, `sendLocation`, `sendContact`, `sendDice`
   - All send methods accept an optional leading `ChatObject` to target a specific chat instead of the private chat.
   - Advanced: `editMessage(msg, text)` (emits `edited_message`), `forwardMessage(msg, toChat?)` (emits forwarded `message` with `forward_origin`), `sendMediaGroup(chat, payloads[])` (emits multiple messages sharing a `media_group_id`), `pinMessage(msg, inChat?)` (emits service `message` with `pinned_message` — GramIO routes these to the `"pinned_message"` event)

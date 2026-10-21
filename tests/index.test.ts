@@ -88,6 +88,63 @@ describe("TelegramTestEnvironment", () => {
 	});
 });
 
+describe("sendReply", () => {
+	it("preserves the discussion root when replying to another comment", async () => {
+		const bot = new Bot("test");
+		let received: ContextType<Bot, "message"> | undefined;
+		bot.on("message", (ctx) => {
+			received = ctx;
+		});
+		const env = new TelegramTestEnvironment(bot);
+		const user = env.createUser();
+		const group = env.createChat({ type: "supergroup", title: "Discussion" });
+		const comment = await user.sendMessage(group, "Comment");
+		const threadId = comment.payload.message_id + 100;
+		comment.payload.message_thread_id = threadId;
+
+		const reply = await user.sendReply(comment, "Reply to comment");
+
+		expect(reply.payload.message_thread_id).toBe(threadId);
+		expect(reply.payload.reply_to_message === comment.payload).toBe(true);
+		expect(received?.threadId).toBe(threadId);
+		expect(received?.chatId).toBe(group.payload.id);
+		expect(received?.text).toBe("Reply to comment");
+		expect(group.messages).toContain(reply);
+
+		const nestedReply = await user.in(group).sendReply(reply, "Nested reply");
+
+		expect(nestedReply.payload.message_thread_id).toBe(threadId);
+		expect(nestedReply.payload.reply_to_message === reply.payload).toBe(true);
+		expect(received?.threadId).toBe(threadId);
+		expect(received?.text).toBe("Nested reply");
+	});
+
+	for (const chatType of ["private", "group"] as const) {
+		it(`does not add a thread identifier to an ordinary ${chatType} reply`, async () => {
+			const bot = new Bot("test");
+			let received: ContextType<Bot, "message"> | undefined;
+			bot.on("message", (ctx) => {
+				received = ctx;
+			});
+			const env = new TelegramTestEnvironment(bot);
+			const user = env.createUser();
+			const chat =
+				chatType === "private"
+					? user.asChat
+					: env.createChat({ type: "group", title: "Group" });
+			const original = await user.sendMessage(chat, "Original");
+
+			const reply = await user.sendReply(original, "Reply");
+
+			expect(reply.payload).not.toHaveProperty("message_thread_id");
+			expect(reply.payload.reply_to_message === original.payload).toBe(true);
+			expect(received).toBeDefined();
+			expect(received?.threadId).toBeUndefined();
+			expect(received?.chatId).toBe(chat.payload.id);
+		});
+	}
+});
+
 describe("User actions", () => {
 	it("emits stopped_message_generation with chat and thread identifiers", async () => {
 		const bot = new Bot("test");

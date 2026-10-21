@@ -174,7 +174,7 @@ export class UserObject {
 		});
 	}
 
-	/** Send a reply to an existing message. */
+	/** Send a reply to an existing message, preserving its thread identifier. */
 	async sendReply(
 		message: MessageObject,
 		text: string | FormattableString,
@@ -184,6 +184,9 @@ export class UserObject {
 		return this._emitMessage(chat, {
 			...resolveText(text),
 			reply_to_message: message.payload as TelegramMessage,
+			...(message.payload.message_thread_id === undefined
+				? {}
+				: { message_thread_id: message.payload.message_thread_id }),
 		});
 	}
 
