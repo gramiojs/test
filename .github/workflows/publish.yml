@@ -39,6 +39,7 @@ jobs:
               run: bun install
 
             - name: Prepare to JSR publish
+              if: ${{ inputs.publish_to_jsr }}
               run: bun scripts/prepare-jsr.ts
 
             - name: Type-check
@@ -80,6 +81,7 @@ jobs:
               with:
                   token: ${{ secrets.GITHUB_TOKEN }}
                   tag: v${{ steps.changelog.outputs.version }}
+                  commit: ${{ github.sha }}
                   name: v${{ steps.changelog.outputs.version }}
                   body: ${{ steps.changelog.outputs.changelog }}
                   draft: false
