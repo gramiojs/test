@@ -63,12 +63,141 @@ const env = new TelegramTestEnvironment(bot);
 - **`env.onApi(method, handler)`** — override the response for a specific API method (see [Mocking API Responses](#mocking-api-responses))
 - **`env.offApi(method?)`** — remove a custom handler (or all handlers if no method given)
 - **`env.apiCalls`** — array of `{ method, params, response }` recording every API call the bot made. Builder instances (e.g. `InlineKeyboard`) in `params.reply_markup` and `params.results[].reply_markup` are unwrapped to plain JSON before recording, so you never need to `JSON.parse(JSON.stringify(...))` to assert on them.
-- **`env.clearApiCalls()`** — empties the `apiCalls` array and drops the bubble cache (useful between logical test phases)
+- **`env.clearApiCalls()`** — empties the API-call journal without deleting messages or breaking live references
 - **`env.lastApiCall(method)`** — returns the most recent recorded call for `method`, or `undefined` if none
 - **`env.filterApiCalls(method)`** — returns all recorded calls for `method` with typed params and response
-- **`env.lastBotMessage(opts?)`** — returns a `MessageObject` mirror of the bot's most recent `sendMessage`, or `undefined`. Filters (all optional, combined with AND): `{ chat }` to scope to a specific chat; `{ withReplyMarkup: true }` to skip status messages and find the last interactive bubble; `{ where: (call) => bool }` for arbitrary predicates on the `sendMessage` call record. The returned bubble is automatically kept in sync with subsequent `editMessageText` / `editMessageCaption` / `editMessageReplyMarkup` calls — even on references captured before the edit — so `user.on(bubble).clickByText(...)` always sees current buttons. Repeated calls return the same instance for the same `(chat_id, message_id)`.
+- **`env.lastBotMessage(opts?)`** — returns the bot's most recent text, media, album item, poll, or invoice from the current API-call journal, or `undefined`. Filters (all optional, combined with AND): `{ chat }`, `{ withReplyMarkup: true }`, and `{ where: (call) => bool }` (the legacy `where` predicate applies to `sendMessage` calls only). Successful edits update the same object; deleted messages are excluded. Clearing the journal clears this lookup's send observations, but `botMessage()` and captured references remain available.
 - **`env.botMessage(chatId, messageId)`** — look up a specific bubble by id, or `undefined` if the bot never sent that message
 - **`env.users`** / **`env.chats`** — all created users and chats
+- **`env.updates`** — snapshots of delivered updates, with environment-local update IDs
+- **`env.message(chatId, messageId)`** — look up any live user or bot message
+- **`env.dispose()`** — restore the bot's original API; use a fresh bot per environment
+
+### Model a conversation
+
+All high-level sends share one message-ID sequence per chat and one `chat.messages` history, including replies from the bot. Actors and chats cannot be silently moved between environments. API calls and delivered updates are snapshots; editing a message does not rewrite earlier updates or reply snapshots.
+
+```ts
+import { InlineKeyboard } from "gramio";
+
+bot.command("start", (ctx) => ctx.sendPhoto("file_id", {
+    caption: "Choose an action",
+    reply_markup: new InlineKeyboard().text("Next", "next"),
+}));
+bot.callbackQuery("next", async (ctx) => {
+    await ctx.answer();
+    await ctx.editCaption("Ready", {
+        reply_markup: new InlineKeyboard().text("Finish", "finish"),
+    });
+});
+
+const env = new TelegramTestEnvironment(bot);
+const alice = env.createUser({ first_name: "Alice" });
+const group = env.createChat({ type: "supergroup", title: "Discussion" });
+await alice.in(group).sendMessage("/start"); // command entity is inferred
+const menu = env.lastBotMessage({ chat: group });
+if (!menu) throw new Error("Bot did not send a menu");
+await alice.on(menu).clickByText("Next");
+expect(menu.payload.caption).toBe("Ready");
+await alice.on(menu).reply("Thanks!"); // stays in the group
+```
+
+`user.on(message)` also offers `edit(text)`, `editCaption(text)`, `forward(chat?)`, `pin()`, `press(replyButtonText)`, and `vote(optionIndices)`. Text/contact reply-keyboard buttons are supported by `press`; buttons requiring extra data give an explicit hint to use a corresponding send action. Voting supports open non-anonymous polls, including changing and retracting votes with `[]`.
+
+For uncommon message types, use `await user.send(new MessageObject().chat(group).venue({ title: "Office" }))`. The actor supplies a fresh ID, date and sender, registers the message, and delivers the update. Builders are fixtures, not a complete Telegram schema validator. `env.emitUpdate()` remains a **low-level escape hatch**: it snapshots and delivers exactly the supplied update, without importing it into chat history or inferring missing fields.
+
+### Topics and the first channel comment
+
+```ts
+const forum = env.createChat({ type: "supergroup", title: "Forum", is_forum: true });
+await alice.in(forum).inTopic(41).sendMessage("Hello topic");
+await alice.in(forum).inTopic(41).sendPhoto({ caption: "In the same topic" });
+
+const channel = env.createChat({ type: "channel", title: "News" });
+const post = await channel.post("Announcement");
+const root = await env.createDiscussion(post, group);
+const first = await alice.on(root).reply("First comment");
+await alice.on(first).reply("Nested comment");
+```
+
+`createDiscussion(post, supergroup)` explicitly models the automatic channel forward and sets the discussion root ID. Ordinary replies do **not** invent a thread ID. `sendReply`, `sendMessage(..., { reply_to })`, media reply options, and `.replyTo()` inherit an existing thread. Explicit topic scopes reject conflicting chat/thread targets. `channel.editPost(post, text)` delivers `edited_channel_post`; users may only edit their own messages.
+
+### Inline results
+
+```ts
+const query = await alice.in(group).sendInlineQuery("cats");
+// The bot must have successfully answered this query with result "cat-1".
+const article = await alice.in(group).sendInlineResult("cat-1", query);
+await alice.on(article).clickByText("Open");
+```
+
+`sendInlineResult` supports text articles, cached/URL photo, video, audio, document, voice, GIF/MPEG4 GIF, sticker, location, venue and contact results, as well as text/location/venue/contact/invoice `input_message_content`. It emits **only** `chosen_inline_result`, not an invented incoming `message`. Successful answers survive `clearApiCalls()`. Game content cannot be inferred from `game_short_name`; use explicit fixtures and low-level update injection for that case.
+
+Results with inline keyboards get a unique `bubble.inlineMessageId`. `env.inlineMessage(id)` returns that same live bubble. Edits by `inline_message_id` return `true` while updating its content/buttons; subsequent `clickByText` emits an inline callback with `inline_message_id` and no `message`. This supports loading placeholders replaced by real audio/photo after selection. Unknown IDs and direct uploads in inline edits reject; upload a file through a normal send first and reuse its `file_id`. Results without keyboards do not invent an inline ID. `chooseInlineResult()` remains available for standalone update injection.
+
+### Files and downloads
+
+Normal `File`/`Blob` uploads automatically preserve metadata and register their bytes. Cached reuse keeps `file_id`/`file_unique_id` stable, including through albums and media edits. URL media receives a local reusable ID; URLs are never fetched. Promised uploads are resolved at runtime before recording (current upstream API declarations still require callers to await them).
+
+```ts
+const sent = await bot.api.sendAudio({
+    chat_id: alice.payload.id,
+    audio: new File(["test audio bytes"], "track.mp3", { type: "audio/mpeg" }),
+    title: "Track", performer: "Artist", duration: 123,
+});
+const audio = sent.audio;
+if (!audio) throw new Error("Expected audio");
+expect(await bot.downloadFile(audio.file_id).text()).toBe("test audio bytes");
+
+// Incoming fixtures only need explicit bytes when the bot actually downloads them.
+const file = env.registerFile(new File(["fixture contents"], "fixture.txt"));
+await alice.send(new MessageObject().document(file));
+```
+
+`env.file(fileId)` reads file metadata; built-in `getFile`, `bot.downloadFile()` and `context.download()` use the same registry. Fixtures with only a `file_id` have metadata but no invented body: downloading them throws a helpful error. The environment installs an instance-local file source and restores it on `dispose()`; no global fetch patch is used. Direct application `fetch` calls (including hand-built Telegram file URLs) remain outside this adapter and need an application-level test seam/mock.
+
+### Guest and Mini App prepared messages
+
+```ts
+await alice.in(group).sendGuestMessage(new MessageObject().audio());
+// The bot can answerGuestQuery(), then edit the returned inline_message_id.
+
+const prepared = await bot.api.savePreparedInlineMessage({
+    user_id: alice.payload.id,
+    allow_group_chats: true,
+    result: { type: "article", id: "share", title: "Share", input_message_content: { message_text: "Shared" } },
+});
+await alice.in(group).sendPreparedInlineMessage(prepared.id);
+```
+
+Guest actions emit `guest_message` with a unique `guest_query_id`; `env.guestMessage(id)` reads the source. Built-in `answerGuestQuery` creates a live inline response, rejecting unknown/already answered queries. `savePreparedInlineMessage` stores a snapshot with a simulated five-minute expiration; sharing checks ownership, expiration and allowed chat type. Sharing does not fabricate an incoming message or chosen-result update. Guest/prepared helpers also accept `.inTopic(id)` scopes. Their unscoped forms accept `(inputOrId, chat?, messageOptions?)`.
+
+### Errors and background retries
+
+By default, a handler failure rejects the awaited user action even if the bot has an `onError` handler. `env.errors` records `{ updateId, error }` entries without mixing concurrent updates. This deliberately prevents tests passing merely because an API call was recorded before the handler crashed. To test error recovery/telemetry without rejecting the action, explicitly use `new TelegramTestEnvironment(bot, { throwOnError: false })` and assert the error journal.
+
+For timer-driven retries, wait for a concrete outcome:
+
+```ts
+await env.waitFor(() => env.lastBotMessage()?.payload.text === "Ready", { timeout: 2000 });
+```
+
+`waitFor` accepts sync/async predicates, polls every 5ms by default, propagates predicate failures and times out (default 1000ms), including when an async predicate hangs. It neither patches timers nor claims that every background job has finished. A plugin that schedules a retry but rejects the original call still rejects it here; catch/assert that failure before waiting for the retry outcome.
+
+### Simulation boundaries and compatibility
+
+- Built-in mocks are the default: ordinary conversations need no `onApi` setup. Use `onApi` to override an answer, simulate failures, or supply external data that the environment does not have. `offApi` restores the built-in response.
+- Forwarding/copying (single and batch) uses tracked messages and preserves album grouping. Copies are available through `botMessage`/`lastBotMessage` even though Telegram returns only their IDs. `stopPoll` closes the tracked poll; live-location edits/stops update the same message reference.
+- Bot name/description/short-description setters and getters preserve language-specific state; menu buttons preserve chat-specific state. Profile-photo reads default to an empty list; use an override for users with photos.
+- Request interception preserves GramIO's formatting, `preRequest`, `onApiCall`, response/error hooks and `suppress: true`. It does not patch global `fetch` or perform real HTTP requests. Async mocks are supported.
+- Default responses cover text/media/album/poll/invoice sends, message edits/deletes, basic chat/member/file reads, command registration, pin/unpin, and common acknowledgement methods. Unsupported methods throw a useful `env.onApi("method", handler)` hint instead of returning an incorrectly typed `true`. This is not a complete Telegram server: permissions, delivery, file transcoding, webhook registration, and every Bot API restriction are not simulated.
+- Failed edits/deletes leave state unchanged. Successful deletion removes the message from active history/lookups and marks existing references `isDeleted`; subsequent user actions reject deleted messages. No ordinary deletion update is invented.
+- `ApiCall.response` is typed as a successful method result **or** `TelegramError`; narrow with `instanceof TelegramError` before reading successful-result fields.
+- Replies/pins contain independent snapshots without nested `reply_to_message`, matching Telegram's wire format. Do not assert JavaScript reference identity between a reply and its parent.
+- Membership actions are idempotent. Cross-chat actor replies/pins, cross-environment entities, duplicate explicit identities and invalid topic IDs are rejected.
+- API replies use existing targets; missing same-chat targets are allowed with `allow_sending_without_reply`. Cross-chat API replies use `external_reply` with the source attribution/media and do not inherit the source thread.
+- Generated group/channel chat IDs are negative; generated private-chat IDs are positive. Message and update sequences belong to the environment. Do not depend on old module-global counter values.
+- `clearApiCalls()` no longer deletes state. Use a fresh environment to reset the conversation. Capture references or use `botMessage()` when continuing a conversation after clearing observations.
 
 ### `UserObject` — the primary actor
 
@@ -99,6 +228,7 @@ await user.sendMessage(format`${italic("important")}`, { reply_to: msg });
 interface MessageOptions {
     entities?: TelegramMessageEntity[]; // extra entities to merge
     reply_to?: MessageObject;           // sets reply_to_message
+    message_thread_id?: number;        // explicit topic/discussion
 }
 ```
 
@@ -184,6 +314,8 @@ await user.sendDice(group, "🏀");
 interface MediaOptions {
     caption?: string | FormattableString; // caption text (entities auto-extracted from FormattableString)
     spoiler?: boolean;                    // sets has_media_spoiler = true
+    reply_to?: MessageObject;             // reply in the same chat/thread
+    message_thread_id?: number;
 }
 ```
 
@@ -515,7 +647,7 @@ new MessageObject()
 | `.replyTo(message)` | Set `reply_to_message` |
 | `.spoiler()` | `has_media_spoiler = true` |
 | `.protect()` | `has_protected_content = true` |
-| `.topicMessage()` | `is_topic_message = true` |
+| `.topicMessage(threadId?)` | `is_topic_message = true`, optionally set `message_thread_id` |
 | `.mediaGroupId(id)` | Set `media_group_id` |
 | `.effectId(id)` | Set `effect_id` |
 | `.viaBot(user)` | Set `via_bot` |
@@ -702,12 +834,16 @@ Use `env.onApi()` to control what the bot receives from the Telegram API. Accept
 env.onApi("getMe", { id: 1, is_bot: true, first_name: "TestBot" });
 
 // Dynamic response based on params
-env.onApi("sendMessage", (params) => ({
-    message_id: 1,
-    date: Date.now(),
-    chat: { id: params.chat_id, type: "private" },
-    text: params.text,
-}));
+env.onApi("sendMessage", (params) => {
+    const chat = env.resolveChat(params.chat_id);
+    return {
+        message_id: env.nextMessageId(chat.payload.id),
+        date: Math.floor(Date.now() / 1000),
+        chat: chat.payload,
+        from: env.botUser,
+        text: params.text,
+    };
+});
 ```
 
 ### Simulating Errors
@@ -728,7 +864,14 @@ env.onApi("sendMessage", (params) => {
     if (params.chat_id === blockedUserId) {
         return apiError(403, "Forbidden: bot was blocked by the user");
     }
-    return { message_id: 1, date: Date.now(), chat: { id: params.chat_id, type: "private" }, text: params.text };
+    const chat = env.resolveChat(params.chat_id);
+    return {
+        message_id: env.nextMessageId(chat.payload.id),
+        date: Math.floor(Date.now() / 1000),
+        chat: chat.payload,
+        from: env.botUser,
+        text: params.text,
+    };
 });
 ```
 

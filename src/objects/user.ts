@@ -11,17 +11,17 @@ import type {
 	TelegramSuccessfulPayment,
 	TelegramUser,
 } from "@gramio/types";
-import { FormattableString } from "gramio";
+import { FormattableString, TelegramError } from "gramio";
 import type { TelegramTestEnvironment } from "../index.ts";
-import { genFile } from "../utils.ts";
+import { diceValue, genFile, replySnapshot, snapshot } from "../utils.ts";
 import { CallbackQueryObject } from "./callback-query.ts";
 import { ChatObject } from "./chat.ts";
 import { ChosenInlineResultObject } from "./chosen-inline-result.ts";
 import { InlineQueryObject } from "./inline-query.ts";
+import { MessageObject } from "./message.ts";
 import { PreCheckoutQueryObject } from "./pre-checkout-query.ts";
-import { ShippingQueryObject } from "./shipping-query.ts";
-import { MessageObject, lastMessageIdPerChat } from "./message.ts";
 import { ReactObject } from "./react.ts";
+import { ShippingQueryObject } from "./shipping-query.ts";
 import { UserInChatScope, UserOnMessageScope } from "./user-scopes.ts";
 
 export let lastUserId = 0;
@@ -31,13 +31,38 @@ export interface MessageOptions {
 	entities?: TelegramMessageEntity[];
 	/** Message to reply to. */
 	reply_to?: MessageObject;
+	/** Explicit discussion/forum topic. Replies otherwise inherit their target's thread. */
+	message_thread_id?: number;
 }
 
-export interface MediaOptions {
+export interface MediaOptions extends MessageOptions {
 	/** Caption text. Accepts a plain string or a `format\`\`` FormattableString. */
 	caption?: string | FormattableString;
 	/** Set has_media_spoiler = true. */
 	spoiler?: boolean;
+}
+
+function applyReplyOptions(
+	payload: Partial<TelegramMessage>,
+	opts?: MessageOptions,
+	environment?: TelegramTestEnvironment,
+) {
+	if (opts?.reply_to) {
+		environment?.assertMessage(opts.reply_to);
+		if (opts.reply_to.isDeleted)
+			throw new Error("Reply target has been deleted");
+		if (
+			opts.message_thread_id !== undefined &&
+			opts.reply_to.payload.message_thread_id !== undefined &&
+			opts.message_thread_id !== opts.reply_to.payload.message_thread_id
+		)
+			throw new Error("Reply target belongs to another thread");
+		payload.reply_to_message = replySnapshot(opts.reply_to);
+		const thread =
+			opts.message_thread_id ?? opts.reply_to.payload.message_thread_id;
+		if (thread !== undefined) payload.message_thread_id = thread;
+	} else if (opts?.message_thread_id !== undefined)
+		payload.message_thread_id = opts.message_thread_id;
 }
 
 export interface StopMessageGenerationOptions {
@@ -58,6 +83,8 @@ function resolveText(input: string | FormattableString): {
 			...(input.entities.length > 0 ? { entities: input.entities } : {}),
 		};
 	}
+	if (typeof input !== "string")
+		throw new TypeError("Message text must be a string or FormattableString");
 	return { text: input };
 }
 
@@ -65,9 +92,11 @@ function resolveText(input: string | FormattableString): {
 function applyMediaOptions(
 	payload: Partial<TelegramMessage>,
 	opts?: MediaOptions,
+	environment?: TelegramTestEnvironment,
 ): void {
 	if (!opts) return;
-	if (opts.caption) {
+	applyReplyOptions(payload, opts, environment);
+	if (opts.caption !== undefined) {
 		if (opts.caption instanceof FormattableString) {
 			payload.caption = opts.caption.text;
 			if (opts.caption.entities.length > 0)
@@ -102,7 +131,9 @@ export class UserObject {
 		});
 	}
 
-	private _checkEnvironment(): void {
+	private _checkEnvironment(): asserts this is this & {
+		environment: TelegramTestEnvironment;
+	} {
 		if (!this.environment) {
 			throw new Error(
 				"UserObject is not attached to a TelegramTestEnvironment. Use env.createUser() to create users.",
@@ -114,22 +145,40 @@ export class UserObject {
 		chat: ChatObject,
 		payload: Partial<TelegramMessage>,
 	): Promise<MessageObject> {
-		const chatId = chat.payload.id;
-		const nextMsgId = (lastMessageIdPerChat.get(chatId) ?? 0) + 1;
-		lastMessageIdPerChat.set(chatId, nextMsgId);
+		this._checkEnvironment();
+		const environment = this.environment;
+		if (!environment) throw new Error("Missing test environment");
+		environment.assertChat(chat);
+		if (chat.payload.type === "channel")
+			throw new Error("Use channel.post() for channel posts");
+		if (
+			payload.message_thread_id !== undefined &&
+			(!Number.isSafeInteger(payload.message_thread_id) ||
+				payload.message_thread_id <= 0)
+		)
+			throw new Error("Thread id must be a positive integer");
+		if (
+			payload.reply_to_message?.chat.id !== undefined &&
+			payload.reply_to_message.chat.id !== chat.payload.id
+		)
+			throw new Error("Reply target belongs to another chat");
+		const nextMsgId = environment.nextMessageId(chat.payload.id);
 
 		const message = new MessageObject({
+			...payload,
 			message_id: nextMsgId,
 			date: Math.floor(Date.now() / 1000),
 			chat: chat.payload,
 			from: this.payload,
-			...payload,
+			...(payload.message_thread_id !== undefined && chat.payload.is_forum
+				? { is_topic_message: true }
+				: {}),
 		});
 
 		message._chat = chat;
-		chat.messages.push(message);
+		environment.registerMessage(message, chat);
 
-		await this.environment!.emitUpdate({
+		await this.environment.emitUpdate({
 			update_id: 0,
 			message: message.payload as MessageObject["payload"] & {
 				chat: NonNullable<MessageObject["payload"]["chat"]>;
@@ -139,6 +188,15 @@ export class UserObject {
 		return message;
 	}
 
+	sendMessage(
+		text: string | FormattableString,
+		options?: MessageOptions,
+	): Promise<MessageObject>;
+	sendMessage(
+		chat: ChatObject,
+		text: string | FormattableString,
+		options?: MessageOptions,
+	): Promise<MessageObject>;
 	async sendMessage(
 		chatOrText: ChatObject | string | FormattableString,
 		textOrOptions?: string | FormattableString | MessageOptions,
@@ -161,17 +219,29 @@ export class UserObject {
 		}
 
 		const resolved = resolveText(rawText);
+		if (opts?.reply_to) this.environment?.assertMessage(opts.reply_to);
 
 		if (opts?.entities?.length) {
 			resolved.entities = [...(resolved.entities ?? []), ...opts.entities];
 		}
 
-		return this._emitMessage(chat, {
-			...resolved,
-			...(opts?.reply_to
-				? { reply_to_message: opts.reply_to.payload as TelegramMessage }
-				: {}),
-		});
+		const payload: Partial<TelegramMessage> = { ...resolved };
+		if (
+			!payload.entities?.some(
+				(entity) => entity.type === "bot_command" && entity.offset === 0,
+			)
+		) {
+			const command = resolved.text.match(
+				/^\/[a-zA-Z0-9_]+(?:@[a-zA-Z0-9_]+)?(?=\s|$)/,
+			);
+			if (command)
+				payload.entities = [
+					{ type: "bot_command", offset: 0, length: command[0].length },
+					...(payload.entities ?? []),
+				];
+		}
+		applyReplyOptions(payload, opts, this.environment);
+		return this._emitMessage(chat, payload);
 	}
 
 	/** Send a reply to an existing message, preserving its thread identifier. */
@@ -180,17 +250,44 @@ export class UserObject {
 		text: string | FormattableString,
 	): Promise<MessageObject> {
 		this._checkEnvironment();
-		const chat = message._chat ?? this.asChat;
-		return this._emitMessage(chat, {
-			...resolveText(text),
-			reply_to_message: message.payload as TelegramMessage,
-			...(message.payload.message_thread_id === undefined
-				? {}
-				: { message_thread_id: message.payload.message_thread_id }),
-		});
+		this.environment?.assertMessage(message);
+		const chat =
+			message._chat ??
+			(message.payload.chat
+				? this.environment?.resolveChat(message.payload.chat)
+				: undefined) ??
+			this.asChat;
+		return this.sendMessage(chat, text, { reply_to: message });
+	}
+
+	/** Send a builder as this user, with normal state tracking and update delivery. */
+	async send(message: MessageObject): Promise<MessageObject> {
+		this._checkEnvironment();
+		if (message.isDeleted) throw new Error("Message has been deleted");
+		if (message._chat) this.environment.assertChat(message._chat);
+		const chat =
+			message._chat ??
+			(message.payload.chat
+				? this.environment?.resolveChat(message.payload.chat)
+				: undefined) ??
+			this.asChat;
+		const {
+			message_id: _id,
+			date: _date,
+			from: _from,
+			chat: _chat,
+			...content
+		} = message.payload;
+		return this._emitMessage(chat, snapshot(content));
 	}
 
 	/** Send a bot command with an auto-generated bot_command entity. */
+	sendCommand(command: string, args?: string): Promise<MessageObject>;
+	sendCommand(
+		chat: ChatObject,
+		command: string,
+		args?: string,
+	): Promise<MessageObject>;
 	async sendCommand(
 		chatOrCommand: ChatObject | string,
 		commandOrArgs?: string,
@@ -204,7 +301,7 @@ export class UserObject {
 
 		if (chatOrCommand instanceof ChatObject) {
 			chat = chatOrCommand;
-			command = commandOrArgs!;
+			command = commandOrArgs ?? "";
 			cmdArgs = args;
 		} else {
 			chat = this.asChat;
@@ -212,10 +309,15 @@ export class UserObject {
 			cmdArgs = commandOrArgs;
 		}
 
+		command = command.replace(/^\//, "");
+		if (!/^[a-zA-Z0-9_]+(?:@[a-zA-Z0-9_]+)?$/.test(command))
+			throw new Error("Invalid bot command");
 		const text = cmdArgs ? `/${command} ${cmdArgs}` : `/${command}`;
 		return this._emitMessage(chat, {
 			text,
-			entities: [{ type: "bot_command", offset: 0, length: command.length + 1 }],
+			entities: [
+				{ type: "bot_command", offset: 0, length: command.length + 1 },
+			],
 		});
 	}
 
@@ -237,7 +339,7 @@ export class UserObject {
 				{ ...genFile(), width: 800, height: 600 },
 			],
 		};
-		applyMediaOptions(payload, opts);
+		applyMediaOptions(payload, opts, this.environment);
 		return this._emitMessage(chat, payload);
 	}
 
@@ -256,7 +358,7 @@ export class UserObject {
 		const payload: Partial<TelegramMessage> = {
 			video: { ...genFile(), width: 1280, height: 720, duration: 10 },
 		};
-		applyMediaOptions(payload, opts);
+		applyMediaOptions(payload, opts, this.environment);
 		return this._emitMessage(chat, payload);
 	}
 
@@ -273,7 +375,7 @@ export class UserObject {
 				: [this.asChat, chatOrOptions];
 
 		const payload: Partial<TelegramMessage> = { document: genFile() };
-		applyMediaOptions(payload, opts);
+		applyMediaOptions(payload, opts, this.environment);
 		return this._emitMessage(chat, payload);
 	}
 
@@ -292,7 +394,7 @@ export class UserObject {
 		const payload: Partial<TelegramMessage> = {
 			voice: { ...genFile(), duration: 5 },
 		};
-		applyMediaOptions(payload, opts);
+		applyMediaOptions(payload, opts, this.environment);
 		return this._emitMessage(chat, payload);
 	}
 
@@ -396,7 +498,7 @@ export class UserObject {
 		}
 
 		return this._emitMessage(chat, {
-			dice: { emoji: diceEmoji ?? "🎲", value: Math.ceil(Math.random() * 6) },
+			dice: { emoji: diceEmoji ?? "🎲", value: diceValue(diceEmoji ?? "🎲") },
 		});
 	}
 
@@ -415,7 +517,7 @@ export class UserObject {
 		const payload: Partial<TelegramMessage> = {
 			audio: { ...genFile(), duration: 30 },
 		};
-		applyMediaOptions(payload, opts);
+		applyMediaOptions(payload, opts, this.environment);
 		return this._emitMessage(chat, payload);
 	}
 
@@ -434,7 +536,7 @@ export class UserObject {
 		const payload: Partial<TelegramMessage> = {
 			animation: { ...genFile(), width: 480, height: 270, duration: 3 },
 		};
-		applyMediaOptions(payload, opts);
+		applyMediaOptions(payload, opts, this.environment);
 		return this._emitMessage(chat, payload);
 	}
 
@@ -453,7 +555,7 @@ export class UserObject {
 		const payload: Partial<TelegramMessage> = {
 			video_note: { ...genFile(), length: 240, duration: 10 },
 		};
-		applyMediaOptions(payload, opts);
+		applyMediaOptions(payload, opts, this.environment);
 		return this._emitMessage(chat, payload);
 	}
 
@@ -463,6 +565,16 @@ export class UserObject {
 		text: string | FormattableString,
 	): Promise<MessageObject> {
 		this._checkEnvironment();
+		this.environment?.assertMessage(message);
+		if (
+			message.payload.chat?.type === "channel" ||
+			message.payload.from?.id !== this.payload.id
+		)
+			throw new Error(
+				"Users can only edit their own messages. Use channel.editPost() for channel posts",
+			);
+		if (message.payload.text === undefined)
+			throw new Error("Message has no text; use editCaption() for media");
 
 		const resolved = resolveText(text);
 		message.payload.text = resolved.text;
@@ -473,13 +585,40 @@ export class UserObject {
 		}
 		message.payload.edit_date = Math.floor(Date.now() / 1000);
 
-		await this.environment!.emitUpdate({
+		await this.environment.emitUpdate({
 			update_id: 0,
 			edited_message: message.payload as TelegramMessage & {
 				chat: NonNullable<TelegramMessage["chat"]>;
 			},
 		});
 
+		return message;
+	}
+
+	/** Edit a user's media caption without creating an impossible text+media message. */
+	async editCaption(
+		message: MessageObject,
+		caption: string | FormattableString,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+		this.environment?.assertMessage(message);
+		if (message.payload.from?.id !== this.payload.id)
+			throw new Error("Users can only edit their own messages");
+		if (
+			!message.payload.photo &&
+			!message.payload.video &&
+			!message.payload.document &&
+			!message.payload.audio &&
+			!message.payload.animation &&
+			!message.payload.voice
+		)
+			throw new Error("Message has no editable caption");
+		message.caption(caption);
+		message.payload.edit_date = Math.floor(Date.now() / 1000);
+		await this.environment.emitUpdate({
+			update_id: 0,
+			edited_message: message.payload as TelegramMessage,
+		});
 		return message;
 	}
 
@@ -494,16 +633,40 @@ export class UserObject {
 		this._checkEnvironment();
 
 		const chat = toChat ?? this.asChat;
-		const { message_id: _mid, date, chat: _c, from, edit_date: _ed, forward_origin: _fo, reply_to_message: _rtm, ...content } =
-			message.payload as TelegramMessage;
+		this.environment?.assertMessage(message);
+		if (message.payload.has_protected_content)
+			throw new Error("Cannot forward protected content");
+		const {
+			message_id: originalId,
+			date,
+			chat: originalChat,
+			from,
+			edit_date: _ed,
+			forward_origin,
+			reply_to_message: _rtm,
+			message_thread_id: _thread,
+			is_topic_message: _topic,
+			sender_chat: _sender,
+			is_automatic_forward: _automatic,
+			...content
+		} = message.payload as TelegramMessage;
 
 		return this._emitMessage(chat, {
 			...content,
-			forward_origin: {
-				type: "user" as const,
-				date,
-				sender_user: from ?? this.payload,
-			},
+			forward_origin:
+				forward_origin ??
+				(originalChat.type === "channel"
+					? {
+							type: "channel",
+							date,
+							chat: originalChat,
+							message_id: originalId,
+						}
+					: {
+							type: "user" as const,
+							date,
+							sender_user: from ?? this.payload,
+						}),
 		});
 	}
 
@@ -528,7 +691,9 @@ export class UserObject {
 			msgs = chatOrPayloads;
 		}
 
-		const groupId = String(Date.now());
+		if (msgs.length < 2 || msgs.length > 10)
+			throw new Error("A media group must contain 2–10 messages");
+		const groupId = this.environment.nextId("album");
 		const results: MessageObject[] = [];
 
 		for (const payload of msgs) {
@@ -552,9 +717,19 @@ export class UserObject {
 	): Promise<MessageObject> {
 		this._checkEnvironment();
 
-		const chat = inChat ?? message._chat ?? this.asChat;
+		this.environment?.assertMessage(message);
+		const chat =
+			inChat ??
+			message._chat ??
+			(message.payload.chat
+				? this.environment?.resolveChat(message.payload.chat)
+				: undefined) ??
+			this.asChat;
+		if (message.payload.chat && message.payload.chat.id !== chat.payload.id)
+			throw new Error("Pinned message belongs to another chat");
+		chat.pinnedMessage = message;
 		return this._emitMessage(chat, {
-			pinned_message: message.payload as TelegramMessage,
+			pinned_message: replySnapshot(message),
 		});
 	}
 
@@ -565,6 +740,8 @@ export class UserObject {
 			);
 		}
 
+		this.environment.assertChat(chat);
+		if (chat.members.has(this)) return;
 		chat.members.add(this);
 
 		await this.environment.emitUpdate({
@@ -585,8 +762,7 @@ export class UserObject {
 		});
 
 		const chatId = chat.payload.id;
-		const nextMsgId = (lastMessageIdPerChat.get(chatId) ?? 0) + 1;
-		lastMessageIdPerChat.set(chatId, nextMsgId);
+		const nextMsgId = this.environment.nextMessageId(chatId);
 
 		const serviceMessage = new MessageObject({
 			message_id: nextMsgId,
@@ -596,7 +772,7 @@ export class UserObject {
 			new_chat_members: [this.payload],
 		});
 
-		chat.messages.push(serviceMessage);
+		this.environment.registerMessage(serviceMessage, chat);
 
 		await this.environment.emitUpdate({
 			update_id: 0,
@@ -613,6 +789,8 @@ export class UserObject {
 			);
 		}
 
+		this.environment.assertChat(chat);
+		if (!chat.members.has(this)) return;
 		chat.members.delete(this);
 
 		await this.environment.emitUpdate({
@@ -633,8 +811,7 @@ export class UserObject {
 		});
 
 		const chatId = chat.payload.id;
-		const nextMsgId = (lastMessageIdPerChat.get(chatId) ?? 0) + 1;
-		lastMessageIdPerChat.set(chatId, nextMsgId);
+		const nextMsgId = this.environment.nextMessageId(chatId);
 
 		const serviceMessage = new MessageObject({
 			message_id: nextMsgId,
@@ -644,7 +821,7 @@ export class UserObject {
 			left_chat_member: this.payload,
 		});
 
-		chat.messages.push(serviceMessage);
+		this.environment.registerMessage(serviceMessage, chat);
 
 		await this.environment.emitUpdate({
 			update_id: 0,
@@ -662,7 +839,7 @@ export class UserObject {
 		this._checkEnvironment();
 		const chat = options.chat ?? this.asChat;
 
-		await this.environment!.emitUpdate({
+		await this.environment.emitUpdate({
 			update_id: 0,
 			stopped_message_generation: {
 				chat: chat.payload,
@@ -687,11 +864,16 @@ export class UserObject {
 		const cbQuery = new CallbackQueryObject({
 			from: this.payload,
 			data: callbackData,
-			chat_instance: String(Date.now()),
+			chat_instance: String(
+				message?.payload.chat?.id ?? this.asChat.payload.id,
+			),
 		});
 
 		if (message) {
-			cbQuery.message(message);
+			this.environment.assertMessage(message);
+			if (message.inlineMessageId)
+				cbQuery.payload.inline_message_id = message.inlineMessageId;
+			else cbQuery.message(message);
 		}
 
 		await this.environment.emitUpdate({
@@ -719,54 +901,77 @@ export class UserObject {
 		let trackedMessage: MessageObject | undefined;
 
 		if (reactOrEmojis instanceof ReactObject) {
-			reactionPayload = reactOrEmojis.payload;
+			reactionPayload = snapshot(reactOrEmojis.payload);
 			trackedMessage = reactOrEmojis._message ?? message;
 
 			if (!reactionPayload.user) reactionPayload.user = this.payload;
-			if (!reactionPayload.chat && trackedMessage) {
-				reactionPayload.chat = trackedMessage.payload.chat ?? this.asChat.payload;
+			if (trackedMessage) {
+				reactionPayload.chat ??=
+					trackedMessage.payload.chat ?? this.asChat.payload;
 				reactionPayload.message_id ??= trackedMessage.payload.message_id;
 			}
 			// auto-populate old_reaction from memory when .remove() was never called
-			if (reactionPayload.old_reaction.length === 0 && trackedMessage) {
-				const prev = trackedMessage.reactions.get(this.payload.id) ?? [];
-				reactionPayload.old_reaction = prev.map((emoji) => ({ type: "emoji" as const, emoji }));
+			if (!reactOrEmojis.hasExplicitOldReactions && trackedMessage) {
+				const prev =
+					trackedMessage.reactions.get(reactionPayload.user.id) ?? [];
+				reactionPayload.old_reaction = prev.map((emoji) => ({
+					type: "emoji" as const,
+					emoji,
+				}));
 			}
 		} else {
 			trackedMessage = message;
-			const newEmojis = Array.isArray(reactOrEmojis) ? reactOrEmojis : [reactOrEmojis];
+			const newEmojis = Array.isArray(reactOrEmojis)
+				? reactOrEmojis
+				: [reactOrEmojis];
 			const prevEmojis = message?.reactions.get(this.payload.id) ?? [];
 			reactionPayload = {
 				chat: message?.payload.chat ?? this.asChat.payload,
 				message_id: message?.payload.message_id ?? 0,
 				user: this.payload,
 				date: Math.floor(Date.now() / 1000),
-				old_reaction: prevEmojis.map((emoji) => ({ type: "emoji" as const, emoji })),
-				new_reaction: newEmojis.map((emoji) => ({ type: "emoji" as const, emoji })),
+				old_reaction: prevEmojis.map((emoji) => ({
+					type: "emoji" as const,
+					emoji,
+				})),
+				new_reaction: newEmojis.map((emoji) => ({
+					type: "emoji" as const,
+					emoji,
+				})),
 			};
 		}
 
+		// persist new reaction state on the message
+		if (trackedMessage) {
+			this.environment.assertMessage(trackedMessage);
+			const newEmojis = reactionPayload.new_reaction
+				.filter(
+					(r): r is { type: "emoji"; emoji: TelegramReactionTypeEmojiEmoji } =>
+						r.type === "emoji",
+				)
+				.map((r) => r.emoji);
+			if (newEmojis.length === 0) {
+				trackedMessage.reactions.delete(
+					reactionPayload.user?.id ?? this.payload.id,
+				);
+			} else {
+				trackedMessage.reactions.set(
+					reactionPayload.user?.id ?? this.payload.id,
+					newEmojis,
+				);
+			}
+		}
 		await this.environment.emitUpdate({
 			update_id: 0,
 			message_reaction: reactionPayload as Required<ReactObject["payload"]>,
 		});
-
-		// persist new reaction state on the message
-		if (trackedMessage) {
-			const newEmojis = reactionPayload.new_reaction
-				.filter((r): r is { type: "emoji"; emoji: TelegramReactionTypeEmojiEmoji } => r.type === "emoji")
-				.map((r) => r.emoji);
-			if (newEmojis.length === 0) {
-				trackedMessage.reactions.delete(this.payload.id);
-			} else {
-				trackedMessage.reactions.set(this.payload.id, newEmojis);
-			}
-		}
 	}
 
 	async sendInlineQuery(
 		query: string,
-		chatOrOptions?: ChatObject | { offset?: string; chat_type?: TelegramInlineQueryChatType },
+		chatOrOptions?:
+			| ChatObject
+			| { offset?: string; chat_type?: TelegramInlineQueryChatType },
 		options?: { offset?: string },
 	): Promise<InlineQueryObject> {
 		if (!this.environment) {
@@ -809,7 +1014,7 @@ export class UserObject {
 			from: this.payload,
 			...overrides,
 		});
-		await this.environment!.emitUpdate({
+		await this.environment.emitUpdate({
 			update_id: 0,
 			pre_checkout_query: query.payload,
 		});
@@ -824,7 +1029,7 @@ export class UserObject {
 			from: this.payload,
 			...overrides,
 		});
-		await this.environment!.emitUpdate({
+		await this.environment.emitUpdate({
 			update_id: 0,
 			shipping_query: query.payload,
 		});
@@ -834,6 +1039,7 @@ export class UserObject {
 	async sendSuccessfulPayment(
 		chatOrOverrides?: ChatObject | Partial<TelegramSuccessfulPayment>,
 		overrides?: Partial<TelegramSuccessfulPayment>,
+		options?: MessageOptions,
 	): Promise<MessageObject> {
 		this._checkEnvironment();
 
@@ -852,8 +1058,8 @@ export class UserObject {
 			currency: "XTR",
 			total_amount: 1,
 			invoice_payload: "default_payload",
-			telegram_payment_charge_id: `tg_charge_${Date.now()}`,
-			provider_payment_charge_id: `provider_charge_${Date.now()}`,
+			telegram_payment_charge_id: this.environment.nextId("tg_charge"),
+			provider_payment_charge_id: this.environment.nextId("provider_charge"),
 			...opts,
 		};
 
@@ -867,13 +1073,13 @@ export class UserObject {
 			order_info: payment.order_info,
 		});
 
-		await this.environment!.emitUpdate({
+		await this.environment.emitUpdate({
 			update_id: 0,
 			pre_checkout_query: preCheckout.payload,
 		});
 
 		// Check that the bot approved the pre-checkout query
-		const answerCall = this.environment!.apiCalls
+		const answerCall = this.environment.apiCalls
 			.filter(
 				(c) =>
 					c.method === "answerPreCheckoutQuery" &&
@@ -887,6 +1093,10 @@ export class UserObject {
 				"Bot did not call answerPreCheckoutQuery. Register a pre_checkout_query handler that calls ctx.answerPreCheckoutQuery({ ok: true }).",
 			);
 		}
+		if (answerCall.response instanceof TelegramError)
+			throw new Error(
+				"Pre-checkout approval failed at the API; Telegram would not send successful_payment",
+			);
 
 		if (!(answerCall.params as { ok?: boolean }).ok) {
 			throw new Error(
@@ -894,10 +1104,207 @@ export class UserObject {
 			);
 		}
 
-		return this._emitMessage(chat, { successful_payment: payment });
+		const payload: Partial<TelegramMessage> = { successful_payment: payment };
+		applyReplyOptions(payload, options, this.environment);
+		return this._emitMessage(chat, payload);
 	}
 
 	/** Scope this user to a chat, enabling fluent actions: `.sendMessage()`, `.sendInlineQuery()`, `.join()`, `.leave()`, `.on(msg)`. */
+	/** Press a reply-keyboard button. Contact buttons share this user's identity. */
+	async press(
+		buttonText: string,
+		message: MessageObject,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+		this.environment?.assertMessage(message);
+		const markup: unknown = message.payload.reply_markup;
+		const keyboard: unknown =
+			markup && typeof markup === "object"
+				? Reflect.get(markup, "keyboard")
+				: undefined;
+		if (!Array.isArray(keyboard))
+			throw new Error("Message has no reply keyboard");
+		for (const row of keyboard) {
+			if (!Array.isArray(row)) continue;
+			for (const button of row) {
+				const label: unknown =
+					typeof button === "string"
+						? button
+						: button && typeof button === "object"
+							? Reflect.get(button, "text")
+							: undefined;
+				if (label !== buttonText) continue;
+				const chat =
+					message._chat ??
+					(message.payload.chat
+						? this.environment?.resolveChat(message.payload.chat)
+						: undefined) ??
+					this.asChat;
+				if (typeof button === "object" && button !== null) {
+					if (Reflect.get(button, "request_contact"))
+						return this.sendContact(chat, {
+							user_id: this.payload.id,
+							first_name: this.payload.first_name,
+							last_name: this.payload.last_name,
+						});
+					if (
+						Object.keys(button).some(
+							(key) =>
+								key !== "text" &&
+								key !== "style" &&
+								key !== "icon_custom_emoji_id",
+						)
+					)
+						throw new Error(
+							"This button requires explicit input; use sendLocation(), send(), or sendMessage() to provide it",
+						);
+				}
+				return this.sendMessage(chat, buttonText);
+			}
+		}
+		throw new Error(`No reply button with text "${buttonText}" found`);
+	}
+
+	/** Vote, change a vote, or retract with [] on a non-anonymous poll. */
+	async vote(message: MessageObject, optionIds: number[]): Promise<void> {
+		this._checkEnvironment();
+		this.environment?.assertMessage(message);
+		const poll = message.payload.poll;
+		if (!poll || poll.is_anonymous || poll.is_closed)
+			throw new Error("Voting requires an open, non-anonymous poll");
+		if (
+			new Set(optionIds).size !== optionIds.length ||
+			optionIds.some(
+				(id) => !Number.isInteger(id) || id < 0 || id >= poll.options.length,
+			)
+		)
+			throw new Error("Invalid poll option indices");
+		if (!poll.allows_multiple_answers && optionIds.length > 1)
+			throw new Error("Poll accepts only one answer");
+		const previous = message.pollVotes.get(this.payload.id) ?? [];
+		if (previous.length && !poll.allows_revoting)
+			throw new Error("Poll does not allow revoting");
+		for (const id of previous) poll.options[id].voter_count--;
+		for (const id of optionIds) poll.options[id].voter_count++;
+		if (optionIds.length)
+			message.pollVotes.set(this.payload.id, [...optionIds]);
+		else message.pollVotes.delete(this.payload.id);
+		poll.total_voter_count +=
+			(optionIds.length ? 1 : 0) - (previous.length ? 1 : 0);
+		await this.environment.emitUpdate({
+			update_id: 0,
+			poll_answer: {
+				poll_id: poll.id,
+				user: this.payload,
+				option_ids: [...optionIds],
+				option_persistent_ids: optionIds.map(
+					(id) => poll.options[id].persistent_id,
+				),
+			},
+		});
+	}
+
+	/** Materialize a returned inline result; only chosen_inline_result is delivered to the bot. */
+	async sendInlineResult(
+		resultId: string,
+		query: InlineQueryObject,
+		chat: ChatObject = this.asChat,
+		options?: MessageOptions,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+		if (query.payload.from.id !== this.payload.id)
+			throw new Error("Inline query belongs to another user");
+		const result = this.environment.inlineResult(query.payload.id, resultId);
+		if (!result)
+			throw new Error("No successful inline answer contains this result id");
+		this.environment.assertChat(chat);
+		const payload: Partial<TelegramMessage> = {};
+		applyReplyOptions(payload, options, this.environment);
+		if (
+			payload.reply_to_message?.chat.id !== undefined &&
+			payload.reply_to_message.chat.id !== chat.payload.id
+		)
+			throw new Error("Reply target belongs to another chat");
+		if (
+			payload.message_thread_id !== undefined &&
+			(!Number.isInteger(payload.message_thread_id) ||
+				payload.message_thread_id <= 0)
+		)
+			throw new Error("Invalid message thread id");
+		const bubble = this.environment.materializeInline(
+			result,
+			this,
+			chat,
+			payload,
+		);
+		await this.chooseInlineResult(resultId, query.payload.query, {
+			inline_message_id: bubble.inlineMessageId,
+		});
+		return bubble;
+	}
+
+	/** Share a saved Mini App message without fabricating a bot message update. */
+	async sendPreparedInlineMessage(
+		id: string,
+		chat: ChatObject = this.asChat,
+		options?: MessageOptions,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+		const result = this.environment.preparedResult(id, this, chat);
+		const payload: Partial<TelegramMessage> = {};
+		applyReplyOptions(payload, options, this.environment);
+		return this.environment.materializeInline(result, this, chat, payload);
+	}
+
+	/** Summon the bot as a guest with text or a media fixture. */
+	async sendGuestMessage(
+		input: string | FormattableString | MessageObject,
+		chat: ChatObject = this.asChat,
+		options?: MessageOptions,
+	): Promise<MessageObject> {
+		this._checkEnvironment();
+		this.environment.assertChat(chat);
+		if (
+			input instanceof MessageObject &&
+			input._chat?.environment &&
+			input._chat.environment !== this.environment
+		)
+			throw new Error("Message belongs to another test environment");
+		const content: Partial<TelegramMessage> =
+			input instanceof MessageObject
+				? snapshot(input.payload)
+				: resolveText(input);
+		applyReplyOptions(content, options, this.environment);
+		if (
+			content.reply_to_message?.chat.id !== undefined &&
+			content.reply_to_message.chat.id !== chat.payload.id
+		)
+			throw new Error("Reply target belongs to another chat");
+		if (
+			content.message_thread_id !== undefined &&
+			(!Number.isSafeInteger(content.message_thread_id) ||
+				content.message_thread_id <= 0)
+		)
+			throw new Error("Invalid message thread id");
+		const message = new MessageObject({
+			...content,
+			chat: chat.payload,
+			from: this.payload,
+			message_id: this.environment.nextMessageId(chat.payload.id),
+			guest_query_id: this.environment.nextId("guest"),
+			...(content.message_thread_id !== undefined && chat.payload.is_forum
+				? { is_topic_message: true }
+				: {}),
+		});
+		message._chat = chat;
+		this.environment.registerGuestMessage(message);
+		await this.environment.emitUpdate({
+			update_id: 0,
+			guest_message: message.payload as TelegramMessage,
+		});
+		return message;
+	}
+
 	in(chat: ChatObject): UserInChatScope {
 		return new UserInChatScope(this, chat);
 	}

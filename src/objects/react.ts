@@ -1,5 +1,9 @@
-import type { TelegramChat, TelegramReactionType, TelegramUser } from "@gramio/types";
-import type { TelegramReactionTypeEmojiEmoji } from "@gramio/types";
+import type {
+	TelegramChat,
+	TelegramReactionType,
+	TelegramReactionTypeEmojiEmoji,
+	TelegramUser,
+} from "@gramio/types";
 import type { ChatObject } from "./chat.ts";
 import type { MessageObject } from "./message.ts";
 import type { UserObject } from "./user.ts";
@@ -16,6 +20,7 @@ export class ReactObject {
 
 	/** @internal Used by `user.react()` to auto-read/write reaction state. */
 	_message?: MessageObject;
+	hasExplicitOldReactions = false;
 
 	constructor() {
 		this.payload = {
@@ -57,6 +62,7 @@ export class ReactObject {
 
 	/** Append emojis to old_reaction (reactions the user had before). */
 	remove(...emojis: TelegramReactionTypeEmojiEmoji[]) {
+		this.hasExplicitOldReactions = true;
 		for (const emoji of emojis) {
 			this.payload.old_reaction.push({ type: "emoji", emoji });
 		}

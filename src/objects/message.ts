@@ -24,7 +24,13 @@ import type {
 } from "gramio";
 import { FormattableString } from "gramio";
 import type { Optional } from "../utils.ts";
-import { genFile, lastMessageIdPerChat } from "../utils.ts";
+import {
+	diceValue,
+	genFile,
+	lastMessageIdPerChat,
+	nextFixtureId,
+	replySnapshot,
+} from "../utils.ts";
 import { ChatObject } from "./chat.ts";
 import { UserObject } from "./user.ts";
 
@@ -36,14 +42,27 @@ export class MessageObject {
 
 	/** @internal Set by UserObject to enable sendReply chat lookup. */
 	public _chat?: ChatObject;
+	/** Deleted messages remain inspectable but cannot be used for new actions. */
+	public isDeleted = false;
+	/** Present for bot-editable inline/guest messages; never sent as part of Message. */
+	public inlineMessageId?: string;
 
 	/** Per-user reaction state. Keyed by `user.payload.id`. Updated automatically by `user.react()`. */
 	public reactions = new Map<number, TelegramReactionTypeEmojiEmoji[]>();
+	/** Per-user option indices for non-anonymous poll simulation. */
+	public pollVotes = new Map<number, number[]>();
 
 	constructor(payload: Partial<TelegramMessage> = {}) {
+		const chatId = payload.chat?.id ?? 0;
+		const messageId =
+			payload.message_id ?? (lastMessageIdPerChat.get(chatId) ?? 0) + 1;
+		lastMessageIdPerChat.set(
+			chatId,
+			Math.max(lastMessageIdPerChat.get(chatId) ?? 0, messageId),
+		);
 		this.payload = {
-			message_id: lastMessageIdPerChat.get(payload.chat?.id ?? 0) ?? 0,
-			date: Date.now(),
+			message_id: messageId,
+			date: Math.floor(Date.now() / 1000),
 			...payload,
 		};
 	}
@@ -73,6 +92,7 @@ export class MessageObject {
 	}
 
 	chat(chat: ChatObject | TelegramChat) {
+		this._chat = chat instanceof ChatObject ? chat : undefined;
 		if (chat instanceof ChatObject) {
 			this.payload.chat = chat.payload;
 		} else {
@@ -91,6 +111,7 @@ export class MessageObject {
 
 	/** Set message text. Accepts a plain string or a `format\`\`` FormattableString (auto-extracts text and entities). */
 	text(text: string | FormattableString): this {
+		delete this.payload.entities;
 		if (text instanceof FormattableString) {
 			this.payload.text = text.text;
 			if (text.entities.length > 0) this.payload.entities = text.entities;
@@ -102,6 +123,7 @@ export class MessageObject {
 
 	/** Set message caption. Accepts a plain string or a `format\`\`` FormattableString. */
 	caption(caption: string | FormattableString): this {
+		delete this.payload.caption_entities;
 		if (caption instanceof FormattableString) {
 			this.payload.caption = caption.text;
 			if (caption.entities.length > 0)
@@ -232,7 +254,7 @@ export class MessageObject {
 	dice(overrides?: Partial<TelegramDice>): this {
 		this.payload.dice = {
 			emoji: "🎲",
-			value: Math.ceil(Math.random() * 6),
+			value: diceValue(overrides?.emoji ?? "🎲"),
 			...overrides,
 		};
 		return this;
@@ -269,7 +291,7 @@ export class MessageObject {
 	/** Attach a poll. */
 	poll(poll: Partial<TelegramPoll>): this {
 		this.payload.poll = {
-			id: String(Date.now()),
+			id: nextFixtureId("poll"),
 			question: "Question",
 			options: [],
 			total_voter_count: 0,
@@ -277,7 +299,7 @@ export class MessageObject {
 			is_anonymous: true,
 			type: "regular",
 			allows_multiple_answers: false,
-			allows_revoting: false,
+			allows_revoting: poll.type !== "quiz",
 			members_only: false,
 			...poll,
 		};
@@ -290,8 +312,8 @@ export class MessageObject {
 			currency: "XTR",
 			total_amount: 1,
 			invoice_payload: "default_payload",
-			telegram_payment_charge_id: `tg_charge_${Date.now()}`,
-			provider_payment_charge_id: `provider_charge_${Date.now()}`,
+			telegram_payment_charge_id: nextFixtureId("tg_charge"),
+			provider_payment_charge_id: nextFixtureId("provider_charge"),
 			...overrides,
 		};
 		return this;
@@ -299,7 +321,9 @@ export class MessageObject {
 
 	/** Set the message this one is replying to. */
 	replyTo(message: MessageObject): this {
-		this.payload.reply_to_message = message.payload as TelegramMessage;
+		this.payload.reply_to_message = replySnapshot(message);
+		if (message.payload.message_thread_id !== undefined)
+			this.payload.message_thread_id = message.payload.message_thread_id;
 		return this;
 	}
 
@@ -316,7 +340,12 @@ export class MessageObject {
 	}
 
 	/** Set is_topic_message = true. */
-	topicMessage(): this {
+	topicMessage(threadId?: number): this {
+		if (threadId !== undefined) {
+			if (!Number.isSafeInteger(threadId) || threadId <= 0)
+				throw new Error("Thread id must be a positive integer");
+			this.payload.message_thread_id = threadId;
+		}
 		this.payload.is_topic_message = true;
 		return this;
 	}
@@ -340,11 +369,15 @@ export class MessageObject {
 	}
 
 	/** Set the quoted portion of the reply. Accepts a plain string or FormattableString. */
-	quote(text: string | FormattableString, entities?: TelegramMessageEntity[]): this {
+	quote(
+		text: string | FormattableString,
+		entities?: TelegramMessageEntity[],
+	): this {
 		if (text instanceof FormattableString) {
 			this.payload.quote = {
 				text: text.text,
-				entities: entities ?? (text.entities.length > 0 ? text.entities : undefined),
+				entities:
+					entities ?? (text.entities.length > 0 ? text.entities : undefined),
 				position: 0,
 			};
 		} else {

@@ -1,7 +1,6 @@
 import type { TelegramChat, TelegramMessage } from "@gramio/types";
 import { FormattableString } from "gramio";
 import type { TelegramTestEnvironment } from "../index.ts";
-import { lastMessageIdPerChat } from "../utils.ts";
 import { MessageObject } from "./message.ts";
 import type { UserObject } from "./user.ts";
 
@@ -15,13 +14,18 @@ export class ChatObject {
 	public members = new Set<UserObject>();
 
 	public messages: MessageObject[] = [];
+	public pinnedMessage?: MessageObject;
 
 	/** @internal Set by TelegramTestEnvironment.createChat */
 	environment?: TelegramTestEnvironment;
 
 	constructor(payload: Partial<TelegramChat> = {}) {
+		const sequence = ++lastChatId;
 		this.payload = {
-			id: ++lastChatId,
+			id:
+				payload.type && payload.type !== "private"
+					? -sequence
+					: 1_000_000_000 + sequence,
 			type: "private",
 			...payload,
 		};
@@ -32,6 +36,8 @@ export class ChatObject {
 	 * Emits a `channel_post` update. The chat should be of type `"channel"`.
 	 */
 	async post(text: string | FormattableString): Promise<MessageObject> {
+		if (this.payload.type !== "channel")
+			throw new Error("post() requires a channel chat");
 		if (!this.environment) {
 			throw new Error(
 				"ChatObject is not attached to a TelegramTestEnvironment. Use env.createChat() to create chats.",
@@ -39,8 +45,7 @@ export class ChatObject {
 		}
 
 		const chatId = this.payload.id;
-		const nextMsgId = (lastMessageIdPerChat.get(chatId) ?? 0) + 1;
-		lastMessageIdPerChat.set(chatId, nextMsgId);
+		const nextMsgId = this.environment.nextMessageId(chatId);
 
 		let msgText: string;
 		let entities: TelegramMessage["entities"];
@@ -61,7 +66,7 @@ export class ChatObject {
 		});
 
 		message._chat = this;
-		this.messages.push(message);
+		this.environment.registerMessage(message, this);
 
 		await this.environment.emitUpdate({
 			update_id: 0,
@@ -70,6 +75,27 @@ export class ChatObject {
 			},
 		});
 
+		return message;
+	}
+
+	/** Edit a channel post and deliver the correct edited_channel_post update. */
+	async editPost(message: MessageObject, text: string | FormattableString) {
+		if (!this.environment)
+			throw new Error(
+				"ChatObject is not attached to a TelegramTestEnvironment",
+			);
+		this.environment.assertMessage(message);
+		if (
+			this.payload.type !== "channel" ||
+			message.payload.chat?.id !== this.payload.id
+		)
+			throw new Error("Post belongs to another channel");
+		message.text(text);
+		message.payload.edit_date = Math.floor(Date.now() / 1000);
+		await this.environment.emitUpdate({
+			update_id: 0,
+			edited_channel_post: message.payload as TelegramMessage,
+		});
 		return message;
 	}
 }

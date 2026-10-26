@@ -19,13 +19,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `TelegramTestEnvironment` is the central orchestrator. It:
 - Wraps a GramIO `Bot` instance
-- Replaces `bot.api` with a `Proxy` that intercepts all outgoing API calls (no real HTTP), records them in `env.apiCalls`, and returns mock responses
+- Uses the instance-local adapter in `src/api.ts` to intercept outgoing requests while preserving `preRequest`, formatting, response/error, `onApiCall`, and suppression semantics (no real HTTP or global fetch patch)
 - Auto-assigns incrementing `update_id` to all updates passed through `emitUpdate()`
 - Creates users (`createUser`) and chats (`createChat`), linking them to the environment
-- `clearApiCalls()` empties the `apiCalls` array **and** drops the bubble cache
+- `clearApiCalls()` empties observations only; messages and captured live references survive
 - `lastApiCall(method)` returns the most recent recorded call for `method`, or `undefined`
 - `filterApiCalls(method)` returns all calls for `method` with typed params/response
 - `lastBotMessage(opts?)` / `botMessage(chatId, msgId)` return a `MessageObject` bubble tracking the bot's sent messages (see Bubble tracking below). Filters on `lastBotMessage`: `chat`, `withReplyMarkup`, `where: (call) => bool` (all AND)
+- `message(chatId, msgId)` reads any active message. `updates` contains independent delivery snapshots. `dispose()` restores the original bot API. Multiple simultaneous environments on the same bot are rejected.
+- `createDiscussion(channelPost, supergroup)` explicitly creates and emits the automatic forward serving as the discussion root, allowing first/nested comments without inventing threads for ordinary replies.
+
+### Default API responses (`src/mock-api.ts`)
+
+Preserve zero-configuration DX: implement a state-backed default whenever the environment has enough information; do not require test authors to mock ordinary bot interactions themselves. `onApi` is for overrides, failures, and unavailable external data, not routine setup. Built-ins include single/batch forward and copy (with album grouping), poll closure, live-location edits/stops, localized bot profile settings, chat menu buttons, and empty profile-photo reads. ID-only copy/batch responses still register full messages so bubble lookups work. Do not replace unimplemented non-boolean responses with a fabricated `true`.
+
+`MockApi` provides state-backed defaults for text/media/album/poll/invoice sends, text/caption/markup/media edits, deletion, chat/member/file reads, command registration, pin/unpin, and common acknowledgements. API replies validate target existence (unless same-chat `allow_sending_without_reply`) and thread consistency; cross-chat replies use `external_reply` without inheriting the source thread. Commands are stored per scope/language. Methods not modeled yet require `env.onApi(method, handler)` instead of returning `true`. Static and async dynamic mocks are supported. The adapter's access to GramIO's private hook store is isolated, shape-checked, and covered by lifecycle tests; there is no public transport injection in GramIO 0.14. Do not spread this compatibility access through the codebase. Mock result casts are boundaries between method-indexed Telegram API types and the runtime method dispatcher.
 
 ### Params normalization (`src/utils.ts` → `normalizeParams`)
 
@@ -38,11 +46,9 @@ Net effect: `env.apiCalls[i].params.reply_markup.inline_keyboard` is always acce
 
 ### Bubble tracking (`env.lastBotMessage` / `env.botMessage`)
 
-The environment maintains a `bubbleCache: Map<"${chatId}:${messageId}", MessageObject>`. On every proxy call, `updateBubbleFor(method, params, response)` is invoked:
-- `sendMessage` → creates (or updates) a `MessageObject` keyed by the response's `message_id`, populating `text`, `caption`, `reply_markup`, `entities`, `caption_entities` from params.
-- `editMessageText` / `editMessageCaption` / `editMessageReplyMarkup` → looks up the cached bubble by `(chat_id, message_id)` and mutates the matching fields in place.
+The environment maintains one `messages` registry keyed by `${chatId}:${messageId}` for user and bot messages, plus a set of bot-originated messages. All high-level messages share the same per-chat ID allocator and `chat.messages` history. Sends register successful response snapshots (including media/albums/polls/invoices); edits update existing payloads in place only on success. Deletes remove messages from active history/lookups and mark live references `isDeleted`. A failed API call never changes message state.
 
-Because mutation is eager (happens in the proxy, not lazily on read), a `MessageObject` reference obtained via `env.lastBotMessage()` before an edit still reflects the edit after it happens — tests can pass `bubble` to `user.on(bubble).clickByText(...)` repeatedly across multiple edits without refreshing. Currently only `sendMessage` originates bubbles; other send-like methods (`sendPhoto`, etc.) are not yet tracked.
+`lastBotMessage` searches send observations in the current API journal, ignoring deleted messages. Its legacy `where` predicate is still specific to `sendMessage`. `botMessage` and captured references remain usable after `clearApiCalls`. API params/responses and delivered updates are snapshots; the typed `ApiCall.response` union includes `TelegramError`. Replies/pins use independent snapshots with nested `reply_to_message` removed.
 
 ### Object builders: `src/objects/`
 
@@ -56,15 +62,29 @@ Each builder wraps a Telegram type with auto-generated IDs and builder methods:
   - Advanced: `editMessage(msg, text)` (emits `edited_message`), `forwardMessage(msg, toChat?)` (emits forwarded `message` with `forward_origin`), `sendMediaGroup(chat, payloads[])` (emits multiple messages sharing a `media_group_id`), `pinMessage(msg, inChat?)` (emits service `message` with `pinned_message` — GramIO routes these to the `"pinned_message"` event)
   - Other: `join(chat)`, `leave(chat)`, `click(data, msg?)`, `react(emojis, msg?)`, `sendInlineQuery(...)`, `chooseInlineResult(...)`
   - `_emitMessage(chat, payload)` is the shared private helper used by all send methods.
-- **`ChatObject`** — Wraps `TelegramChat`. Tracks `members: Set<UserObject>` and `messages: MessageObject[]` as in-memory state. Has `environment?: TelegramTestEnvironment` (set by `env.createChat()`). `post(text)` emits a `channel_post` update (no `from` field — for channel bots).
-- **`MessageObject`** — Wraps `TelegramMessage`. Builder methods: `.from(user)`, `.chat(chat)`. Content: `.text(str|FormattableString)`, `.caption(...)`, `.entities(...)`, `.captionEntities(...)`. Attachments (all auto-generate file_id): `.photo()`, `.video()`, `.document()`, `.audio()`, `.sticker()`, `.voice()`, `.videoNote()`, `.animation()`, `.contact()`, `.location()`, `.dice()`, `.venue()`, `.game()`, `.story()`, `.poll()`. Structure: `.replyTo(msg)`, `.spoiler()`, `.protect()`, `.topicMessage()`, `.mediaGroupId()`, `.effectId()`, `.viaBot()`, `.quote()`, `.linkPreviewOptions()`. Internal `_chat?: ChatObject` is set by `_emitMessage` to enable `sendReply` chat lookup.
+- `user.send(builder)` imports arbitrary message content as this actor with fresh identity/state tracking. `env.emitUpdate` intentionally remains raw delivery and does not update world state. `sendMessage` infers a leading command entity without removing supplied formatting. `MessageOptions` and captioned `MediaOptions` accept `reply_to` and `message_thread_id`.
+- User actions also include `editCaption`, `press` (text/contact reply keyboards), `vote` (non-anonymous polls with change/retract state), and `sendInlineResult` (materialize a successful answer to this user's query). Keep unsupported interactive button/result types explicit rather than silently fabricating input.
+- **`ChatObject`** — Tracks members, active messages and `pinnedMessage`. `post(text)` requires a channel and emits `channel_post` without `from`; `editPost(message, text)` emits `edited_channel_post`. Membership transitions are idempotent. Actors/chats cannot cross environment boundaries or duplicate registered IDs.
+- **`MessageObject`** — Wraps `TelegramMessage`. Builder methods: `.from(user)`, `.chat(chat)`. Content: `.text(str|FormattableString)`, `.caption(...)`, `.entities(...)`, `.captionEntities(...)`. Attachments (all auto-generate file_id): `.photo()`, `.video()`, `.document()`, `.audio()`, `.sticker()`, `.voice()`, `.videoNote()`, `.animation()`, `.contact()`, `.location()`, `.dice()`, `.venue()`, `.game()`, `.story()`, `.poll()`. Structure: `.replyTo(msg)`, `.spoiler()`, `.protect()`, `.topicMessage(threadId?)`, `.mediaGroupId()`, `.effectId()`, `.viaBot()`, `.quote()`, `.linkPreviewOptions()`. Internal `_chat?: ChatObject` is set by `.chat(chat)` and registration to enable `sendReply` chat lookup.
 - **`CallbackQueryObject`** — Wraps `TelegramCallbackQuery`. Builder methods: `.from(user)`, `.message(msg)`, `.data(str)`.
-- **`UserOnMessageScope`** (from `user.on(msg)`) — `.react(emojis)`, `.click(data)`, `.clickByText(buttonText)` (scans `inline_keyboard` for a button with matching text and clicks its `callback_data`).
-- **`UserInChatScope`** (from `user.in(chat)`) — all `sendMessage/sendCommand/sendReply/sendPhoto/sendVideo/sendDocument/sendVoice/sendAudio/sendAnimation/sendVideoNote/sendSticker/sendLocation/sendContact/sendDice/sendInlineQuery/join/leave/on(msg)` variants with the chat pre-bound.
+- **`UserOnMessageScope`** — react/click/clickByText plus `reply`, `edit`, `editCaption`, `forward`, `pin`, `press`, and `vote`.
+- **`UserInChatScope`** — chat-prebound send methods, inline actions, payments and membership. `.inTopic(id)` carries thread context through sends. Contradictory chat/topic scopes throw instead of silently changing destinations.
 
-### ID generation
+### Inline, guest, prepared messages and files
 
-Module-level `let` counters (`lastUserId`, `lastChatId`, `lastCallbackQueryId`, `lastFileId`) auto-increment. `lastMessageIdPerChat` is a `Map<chatId, messageId>` for per-chat message ID sequences. `genFile()` (exported from `src/utils.ts`) uses `lastFileId` to produce `{ file_id, file_unique_id }` pairs for media attachments. All counters are module-scoped globals — they persist across tests within the same process.
+`sendInlineResult` materializes common cached/URL media, articles, location/venue/contact and supported input-message content (including invoices). Successful inline answers have a state registry independent of observations. Only `chosen_inline_result` is emitted; no incoming `message` is invented. A keyboard creates `MessageObject.inlineMessageId`; `env.inlineMessage(id)` resolves the live entity. Its callbacks carry an inline ID instead of `message`. Built-in inline edits return `true`, mutate the tracked payload and validate existence/upload restrictions. Game content is not fabricated from a short name. `chooseInlineResult` remains low-level delivery only.
+
+`user.sendGuestMessage(input, chat?, options?)` emits `guest_message`; `env.guestMessage(queryId)` reads its source. Built-in `answerGuestQuery` creates an editable inline response and rejects unknown/answered IDs. `savePreparedInlineMessage` snapshots the result with a simulated five-minute expiration. `user.sendPreparedInlineMessage(id, chat?, options?)` materializes it after ownership, expiration and target-type checks, without inventing updates. Both helpers are available in chat/topic scopes.
+
+`src/files.ts` owns environment-local identities/optional Blob bytes. Sends, cached reuse, user fixtures, albums and edits share metadata. Upload promises are resolved only at known upload fields before params are snapshotted; upstream API types currently require awaited uploads. `env.registerFile(input, metadata?)` seeds bytes/identity and `env.file(id)` reads metadata. Unknown `getFile` IDs reject; known ID-only fixtures cannot be downloaded until bytes are supplied. Public `bot.options.files.source` supplies local download bytes and is restored on dispose. No global fetch patch or URL download occurs; direct application fetches are outside this boundary.
+
+### Handler errors and asynchronous outcomes
+
+The instance-local hook adapter also installs/removes an error observer. `env.errors` journals `{ updateId, error }`; `emitUpdate` rethrows failures for its own update by default, after normal GramIO error handling. `new TelegramTestEnvironment(bot, { throwOnError: false })` explicitly permits error-observation tests. Do not restore silent false-positive tests by weakening ownership/API validation. `env.waitFor(predicate, { timeout?, interval? })` waits for an observable sync/async outcome with a bounded timeout (1000ms default, 5ms polling); it does not track arbitrary application timers or swallow predicate errors.
+
+### ID generation details
+
+Message/update IDs and album/payment action IDs are environment-local; all participants share each chat's sequence. Explicit fixture references reserve their message IDs. Generated group/channel IDs are negative and private IDs positive, avoiding collisions with generated users. Standalone builders, user/query/file IDs retain module-local fixture counters for backward compatibility. Fixture poll/payment IDs and action albums do not use wall-clock time, so freezing time cannot merge distinct entities. Builder dates use seconds, and replacement text/captions clear stale entities.
 
 ### Circular import handling
 

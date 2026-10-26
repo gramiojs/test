@@ -105,7 +105,7 @@ describe("sendReply", () => {
 		const reply = await user.sendReply(comment, "Reply to comment");
 
 		expect(reply.payload.message_thread_id).toBe(threadId);
-		expect(reply.payload.reply_to_message === comment.payload).toBe(true);
+		expect<unknown>(reply.payload.reply_to_message).toEqual(comment.payload);
 		expect(received?.threadId).toBe(threadId);
 		expect(received?.chatId).toBe(group.payload.id);
 		expect(received?.text).toBe("Reply to comment");
@@ -114,7 +114,8 @@ describe("sendReply", () => {
 		const nestedReply = await user.in(group).sendReply(reply, "Nested reply");
 
 		expect(nestedReply.payload.message_thread_id).toBe(threadId);
-		expect(nestedReply.payload.reply_to_message === reply.payload).toBe(true);
+		const { reply_to_message: _parent, ...replySnapshot } = reply.payload;
+		expect<unknown>(nestedReply.payload.reply_to_message).toEqual(replySnapshot);
 		expect(received?.threadId).toBe(threadId);
 		expect(received?.text).toBe("Nested reply");
 	});
@@ -137,7 +138,7 @@ describe("sendReply", () => {
 			const reply = await user.sendReply(original, "Reply");
 
 			expect(reply.payload).not.toHaveProperty("message_thread_id");
-			expect(reply.payload.reply_to_message === original.payload).toBe(true);
+			expect<unknown>(reply.payload.reply_to_message).toEqual(original.payload);
 			expect(received).toBeDefined();
 			expect(received?.threadId).toBeUndefined();
 			expect(received?.chatId).toBe(chat.payload.id);
@@ -1132,7 +1133,7 @@ describe("onApi / offApi", () => {
 				return apiError(403, "Forbidden: bot was blocked by the user");
 			}
 			return {
-				message_id: 1,
+				message_id: env.nextMessageId(Number(params.chat_id)),
 				date: 0,
 				chat: { id: Number(params.chat_id), type: "private" as const },
 				text: String(params.text),
@@ -1616,7 +1617,7 @@ describe("user.pinMessage()", () => {
 		const env = new TelegramTestEnvironment(bot);
 		const user = env.createUser();
 		const group = env.createChat({ type: "group", title: "Pin Group" });
-		const original = await user.sendMessage("Hello");
+		const original = await user.sendMessage(group, "Hello");
 
 		await user.pinMessage(original, group);
 
@@ -2338,7 +2339,7 @@ describe("env.lastBotMessage / botMessage bubble tracking", () => {
 		);
 	});
 
-	it("clearApiCalls drops the bubble cache", async () => {
+	it("clearApiCalls clears send observations without deleting stored messages", async () => {
 		const bot = new Bot("test");
 		bot.on("message", (ctx) => ctx.send("reply"));
 
@@ -2347,8 +2348,11 @@ describe("env.lastBotMessage / botMessage bubble tracking", () => {
 		await user.sendMessage("hi");
 
 		expect(env.lastBotMessage()).toBeDefined();
+		const bubble = env.lastBotMessage();
 		env.clearApiCalls();
 		expect(env.lastBotMessage()).toBeUndefined();
+		if (!bubble) throw new Error("Missing bubble");
+		expect(env.botMessage(user.payload.id, bubble.payload.message_id)).toBe(bubble);
 	});
 
 	it("botMessage(chatId, messageId) looks up a specific bubble", async () => {
