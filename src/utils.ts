@@ -1,6 +1,23 @@
 export type Optional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
 let lastFileId = 0;
+let lastFixtureId = 0;
+export function nextFixtureId(prefix: string) {
+	return `${prefix}_${++lastFixtureId}`;
+}
+
+export function diceValue(emoji: string): number {
+	const max = new Map([
+		["🎲", 6],
+		["🎯", 6],
+		["🏀", 5],
+		["⚽", 5],
+		["🎳", 6],
+		["🎰", 64],
+	]).get(emoji);
+	if (max === undefined) throw new Error(`Unsupported dice emoji: ${emoji}`);
+	return Math.floor(Math.random() * max) + 1;
+}
 export function genFile() {
 	const id = ++lastFileId;
 	return { file_id: `file_${id}`, file_unique_id: `unique_${id}` };
@@ -8,6 +25,18 @@ export function genFile() {
 
 /** Tracks the last message ID assigned per chat ID. */
 export const lastMessageIdPerChat = new Map<number, number>();
+
+/** Telegram wire values are JSON data. Snapshot at boundaries, not live references. */
+export function snapshot<T>(value: T): T {
+	return structuredClone(value);
+}
+
+export function replySnapshot(
+	message: import("./objects/message.ts").MessageObject,
+) {
+	const { reply_to_message: _reply, ...payload } = message.payload;
+	return snapshot(payload) as import("@gramio/types").TelegramMessage;
+}
 
 /**
  * If `value` is a Builder-like object with a `.toJSON()` method (e.g. an
@@ -69,6 +98,11 @@ export function normalizeParams(
 			out ??= { ...params };
 			out.results = normalizedResults;
 		}
+	}
+	if (params.result && typeof params.result === "object") {
+		const normalized = normalizeParams({ results: [params.result] });
+		out ??= { ...params };
+		out.result = (normalized.results as unknown[])[0];
 	}
 
 	return out ?? params;
