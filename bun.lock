@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "@gramio/init-data",
+      "name": "@gramio/test",
       "devDependencies": {
         "@biomejs/biome": "^2.4.0",
         "@gramio/contexts": "^0.11.0",
